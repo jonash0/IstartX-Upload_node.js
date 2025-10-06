@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Panel - File Upload</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .panel-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .panel-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 10px 10px 0 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .panel-content {
+            background: white;
+            padding: 30px;
+            border-radius: 0 0 10px 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .breadcrumb {
+            color: rgba(255,255,255,0.8);
+            margin-bottom: 10px;
+        }
+        
+        .breadcrumb a {
+            color: rgba(255,255,255,0.8);
+            text-decoration: none;
+        }
+        
+        .breadcrumb a:hover {
+            color: white;
+        }
+        
+        .upload-section {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 8px;
+            border: 2px dashed #dee2e6;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .upload-section:hover {
+            border-color: #667eea;
+            background: #f0f2ff;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #495057;
+        }
+        
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+        
+        input[type="text"]:focus, input[type="file"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .upload-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+        
+        .upload-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .upload-btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .file-list {
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+            display: none;
+        }
+        
+        .file-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #f1f3f4;
+            display: flex;
+            align-items: center;
+        }
+        
+        .file-item:last-child {
+            border-bottom: none;
+        }
+        
+        .file-icon {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            background: #667eea;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+        }
+        
+        .help-text {
+            font-size: 13px;
+            color: #6c757d;
+            margin-top: 8px;
+        }
+        
+        .upload-progress {
+            display: none;
+            margin-top: 15px;
+            padding: 15px;
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 6px;
+            color: #856404;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .stat-label {
+            color: #6c757d;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="panel-container">
+        <div class="panel-header">
+            <div class="breadcrumb">
+                <a href="/admin">Admin Panel</a> > <a href="/admin/files">File Management</a> > Upload Files
+            </div>
+            <h1>📁 File Upload Center</h1>
+            <p>Upload files to Backblaze B2 Cloud Storage</p>
+        </div>
+        
+        <div class="panel-content">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number" id="totalFiles">0</div>
+                    <div class="stat-label">Files Selected</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="totalSize">0 KB</div>
+                    <div class="stat-label">Total Size</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">B2</div>
+                    <div class="stat-label">Storage Provider</div>
+                </div>
+            </div>
+            
+            <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
+                <div class="upload-section">
+                    <div class="form-group">
+                        <label for="user_id">👤 User ID:</label>
+                        <input type="text" id="user_id" name="user_id" required placeholder="Enter User ID" value="michal123">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="myfiles">📎 Select Files:</label>
+                        <input type="file" id="myfiles" name="myfiles" multiple accept="*/*">
+                        <div class="help-text">
+                            💡 Hold Ctrl (Windows) or Cmd (Mac) to select multiple files
+                        </div>
+                        <div id="fileList" class="file-list"></div>
+                    </div>
+                    
+                    <button type="submit" id="uploadBtn" class="upload-btn">
+                        🚀 Upload Files
+                    </button>
+                    
+                    <div id="uploadProgress" class="upload-progress">
+                        ⏳ Uploading files to B2 storage, please wait...
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('myfiles');
+        const fileList = document.getElementById('fileList');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const uploadForm = document.getElementById('uploadForm');
+        const uploadProgress = document.getElementById('uploadProgress');
+        const totalFilesEl = document.getElementById('totalFiles');
+        const totalSizeEl = document.getElementById('totalSize');
+
+        fileInput.addEventListener('change', function() {
+            const files = this.files;
+            
+            if (files.length > 0) {
+                let totalSize = 0;
+                
+                fileList.style.display = 'block';
+                fileList.innerHTML = `
+                    <h4>📋 Selected Files (${files.length}):</h4>
+                    ${Array.from(files).map((file, index) => {
+                        totalSize += file.size;
+                        const fileExt = file.name.split('.').pop().toUpperCase();
+                        return `
+                            <div class="file-item">
+                                <div class="file-icon">${fileExt.charAt(0)}</div>
+                                <div>
+                                    <strong>${file.name}</strong><br>
+                                    <small>${(file.size / 1024).toFixed(2)} KB</small>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                `;
+                
+                totalFilesEl.textContent = files.length;
+                totalSizeEl.textContent = (totalSize / 1024).toFixed(2) + ' KB';
+                uploadBtn.innerHTML = `🚀 Upload ${files.length} File${files.length > 1 ? 's' : ''}`;
+            } else {
+                fileList.style.display = 'none';
+                totalFilesEl.textContent = '0';
+                totalSizeEl.textContent = '0 KB';
+                uploadBtn.innerHTML = '🚀 Upload Files';
+            }
+        });
+
+        uploadForm.addEventListener('submit', function() {
+            uploadBtn.disabled = true;
+            uploadBtn.innerHTML = '⏳ Uploading...';
+            uploadProgress.style.display = 'block';
+        });
+    </script>
+</body>
+</html>
