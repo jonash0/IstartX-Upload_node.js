@@ -7,18 +7,18 @@ const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/clie
 const app = express();
 const upload = multer({ dest: path.join(__dirname, 'uploads/') }); // Temp storage for incoming files
 
-// Configure S3 client for Backblaze B2 (same config as PHP)
+// Configure S3 client for Tigris Object Storage
 const s3Client = new S3Client({
-  region: 'us-east-005',
-  endpoint: 'https://s3.us-east-005.backblazeb2.com',
+  region: process.env.AWS_REGION || 'auto',
+  endpoint: process.env.AWS_ENDPOINT_URL_S3 || 'https://fly.storage.tigris.dev',
   forcePathStyle: true,
   credentials: {
-    accessKeyId: '005b37c1a06d8720000000003',
-    secretAccessKey: 'K005bgQ4iRKPrjaqphNadA7p5fulKnQ',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
 
-const BUCKET_NAME = 'ISTARTX';
+const BUCKET_NAME = process.env.BUCKET_NAME || 'istartx-upload-bucket';
 
 // Serve the upload form
 app.get('/', (req, res) => {
@@ -116,8 +116,8 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
 
         const uploadResult = await s3Client.send(uploadCommand);
 
-        // Build CDN URL (same as PHP logic)
-        const objectUrl = `https://cdn.istartx.io/${finalKey}`;
+        // Build Tigris CDN URL
+        const objectUrl = `https://fly.storage.tigris.dev/${BUCKET_NAME}/${finalKey}`;
 
         results.push({
           userId: userId,
