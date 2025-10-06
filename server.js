@@ -2,10 +2,31 @@ const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
 const upload = multer({ dest: path.join(__dirname, 'uploads/') }); // Temp storage for incoming files
+
+// Add CORS middleware for local testing
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
+});
+
+// Function to generate random filename
+function generateRandomFilename(originalFilename) {
+  const fileInfo = path.parse(originalFilename);
+  const extension = fileInfo.ext;
+  const randomString = crypto.randomBytes(16).toString('hex');
+  return `${randomString}${extension}`;
+}
 
 // Configure S3 client for Tigris Object Storage
 const s3Client = new S3Client({
@@ -25,6 +46,11 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'upload.html'));
 });
 
+// Serve the local test page
+app.get('/test', (req, res) => {
+  res.sendFile(path.join(__dirname, 'local_test.html'));
+});
+
 // Serve upload form for panel integration
 app.get('/panel/upload', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel-upload.html'));
@@ -38,24 +64,15 @@ app.get('/admin/files', (req, res) => {
 // Handle file uploads and upload to B2
 app.post('/upload', upload.array('myfiles'), async (req, res) => {
   try {
-    const userId = req.body.user_id;
+    const userId = req.body.user_id || 'guest';
     
-    // Validate user_id is provided
-    if (!userId) {
-      return res.status(400).send(`
-        <h2>Error: User ID is required</h2>
-        <p>Please provide a User ID before uploading files.</p>
-        <a href="/">Back</a>
-      `);
-    }
-
     // Check if files were uploaded
     if (!req.files || req.files.length === 0) {
-      return res.status(400).send(`
-        <h2>Error: No files selected</h2>
-        <p>Please select at least one file to upload.</p>
-        <a href="/">Back</a>
-      `);
+      return res.status(400).json({
+        success: false,
+        error: 'No files selected',
+        message: 'Please select at least one file to upload.'
+      });
     }
 
     const results = [];
@@ -69,31 +86,29 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
       try {
         console.log(`Processing file ${i + 1}/${req.files.length}: ${file.originalname}`);
         
-        // Parse filename components (same logic as PHP)
-        const originalFilename = file.originalname;
-        const fileInfo = path.parse(originalFilename);
-        const basename = fileInfo.name;
-        const extension = fileInfo.ext;
+        // Generate random filename
+        const randomFilename = generateRandomFilename(file.originalname);
         
-        let b2Filename = originalFilename;
+        // Check if random filename exists (very unlikely but just in case)
+        let finalFilename = randomFilename;
         let suffix = 1;
         
-        // Check if file exists and add suffix if needed (same logic as PHP)
         while (true) {
-          const b2Key = `${userId}/${b2Filename}`;
+          const b2Key = `${userId}/${finalFilename}`;
           
           try {
-            // Check if file exists using headObject (same as PHP headObject)
+            // Check if file exists using headObject
             await s3Client.send(new HeadObjectCommand({
               Bucket: BUCKET_NAME,
               Key: b2Key,
             }));
             
-            // File exists, add suffix
-            b2Filename = `${basename}_${suffix}${extension}`;
+            // File exists (very unlikely with random names), add suffix
+            const fileInfo = path.parse(randomFilename);
+            finalFilename = `${fileInfo.name}_${suffix}${fileInfo.ext}`;
             suffix++;
           } catch (error) {
-            // File doesn't exist (404 error), we can use this filename
+            // File doesn't exist (expected), we can use this filename
             if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
               break;
             }
@@ -104,9 +119,9 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
 
         // Read file data
         const fileData = fs.readFileSync(file.path);
-        const finalKey = `${userId}/${b2Filename}`;
+        const finalKey = `${userId}/${finalFilename}`;
 
-        // Upload to B2 using S3-compatible API
+        // Upload to Tigris using S3-compatible API
         const uploadCommand = new PutObjectCommand({
           Bucket: BUCKET_NAME,
           Key: finalKey,
@@ -116,24 +131,26 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
 
         const uploadResult = await s3Client.send(uploadCommand);
 
-        // Build Tigris CDN URL
-        const objectUrl = `https://fly.storage.tigris.dev/${BUCKET_NAME}/${finalKey}`;
+        // Build CDN URL using custom domain
+        const objectUrl = `https://cdn.istartx.io/${finalKey}`;
 
         results.push({
+          success: true,
           userId: userId,
-          originalFileName: originalFilename,
-          finalFileName: b2Filename,
+          originalFileName: file.originalname,
+          finalFileName: finalFilename,
           cdnUrl: objectUrl,
           b2Key: finalKey,
           fileSize: file.size,
           mimeType: file.mimetype,
         });
 
-        console.log(`Successfully uploaded: ${originalFilename} → ${b2Filename}`);
+        console.log(`Successfully uploaded: ${file.originalname} → ${finalFilename}`);
 
       } catch (fileError) {
         console.error(`Error uploading file ${file.originalname}:`, fileError);
         errors.push({
+          success: false,
           fileName: file.originalname,
           error: fileError.message
         });
@@ -149,11 +166,27 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
       }
     }
 
-    // Generate response with detailed results
+    // Return JSON response
     const successCount = results.length;
     const errorCount = errors.length;
     const totalCount = successCount + errorCount;
 
+    // Check if request wants JSON response (for API calls)
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.json({
+        success: successCount > 0,
+        userId: userId,
+        summary: {
+          total: totalCount,
+          successful: successCount,
+          failed: errorCount
+        },
+        files: results,
+        errors: errors
+      });
+    }
+
+    // Return HTML response for form submissions
     res.send(`
       <style>
         body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; }
@@ -211,6 +244,14 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
     
   } catch (err) {
     console.error('Upload error:', err);
+    
+    if (req.headers.accept && req.headers.accept.includes('application/json')) {
+      return res.status(500).json({
+        success: false,
+        error: err.message
+      });
+    }
+    
     res.status(500).send(`
       <h2>Upload Error</h2>
       <pre>${err.message}</pre>

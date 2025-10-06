@@ -1,7 +1,7 @@
 # fly.toml app configuration file generated for istartx-upload on 2025-10-06T00:00:00Z
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 
-app = "istartx-upload"
+app = "istartx-upload-demo"
 primary_region = "gru"
 
 [build]
