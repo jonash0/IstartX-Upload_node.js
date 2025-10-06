@@ -154,6 +154,11 @@
         <div class="upload-form" id="uploadForm">
             <h3>📁 Select Multiple Files to Upload</h3>
             <p>Drag & drop files here or click to select</p>
+            <div style="font-size: 0.9em; color: #666; margin: 10px 0;">
+                ✅ <strong>Supported:</strong> Images, Videos, Documents, Archives<br>
+                📏 <strong>File Size:</strong> Up to 100MB per file<br>
+                📊 <strong>Bulk Upload:</strong> Up to 10 files at once
+            </div>
             
             <input type="text" id="userIdInput" placeholder="User ID (optional)" value="guest">
             <br>
@@ -230,6 +235,25 @@
                 return;
             }
 
+            // Validate file sizes
+            const maxFileSize = 100 * 1024 * 1024; // 100MB
+            const oversizedFiles = [];
+            let totalSize = 0;
+
+            for (let i = 0; i < files.length; i++) {
+                if (files[i].size > maxFileSize) {
+                    oversizedFiles.push(`${files[i].name} (${(files[i].size / 1024 / 1024).toFixed(1)}MB)`);
+                }
+                totalSize += files[i].size;
+            }
+
+            if (oversizedFiles.length > 0) {
+                alert(`The following files exceed the 100MB limit:\n${oversizedFiles.join('\n')}`);
+                return;
+            }
+
+            console.log(`Uploading ${files.length} files, total size: ${(totalSize / 1024 / 1024).toFixed(1)}MB`);
+
             // Prepare form data
             const formData = new FormData();
             formData.append('user_id', userId);
@@ -244,7 +268,7 @@
             results.innerHTML = '';
 
             try {
-                progressText.textContent = `Uploading ${files.length} file(s)...`;
+                progressText.textContent = `Uploading ${files.length} file(s) (${(totalSize / 1024 / 1024).toFixed(1)}MB)...`;
                 progressFill.style.width = '50%';
 
                 const response = await fetch(`${serverUrl}/upload`, {

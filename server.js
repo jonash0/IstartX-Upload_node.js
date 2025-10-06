@@ -3,10 +3,17 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, HeadObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
-const upload = multer({ dest: path.join(__dirname, 'uploads/') }); // Temp storage for incoming files
+// Configure multer for larger files (100MB limit)
+const upload = multer({ 
+  dest: path.join(__dirname, 'uploads/'),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB
+    files: 10 // Maximum 10 files at once
+  }
+});
 
 // Add CORS middleware for local testing
 app.use((req, res, next) => {
@@ -27,6 +34,80 @@ function generateRandomFilename(originalFilename) {
   const randomString = crypto.randomBytes(16).toString('hex');
   console.log(`Random filename generation: ${originalFilename} → ${randomString}${extension}`);
   return `${randomString}${extension}`;
+}
+
+// Function to upload large files using multipart upload
+async function uploadLargeFile(fileData, bucketName, key, contentType) {
+  const chunkSize = 5 * 1024 * 1024; // 5MB chunks (minimum for S3)
+  
+  if (fileData.length <= chunkSize) {
+    // File is small enough for regular upload
+    const uploadCommand = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      Body: fileData,
+      ContentType: contentType,
+    });
+    return await s3Client.send(uploadCommand);
+  }
+
+  console.log(`Starting multipart upload for ${key} (${fileData.length} bytes)`);
+  
+  // Create multipart upload
+  const createCommand = new CreateMultipartUploadCommand({
+    Bucket: bucketName,
+    Key: key,
+    ContentType: contentType,
+  });
+  
+  const createResult = await s3Client.send(createCommand);
+  const uploadId = createResult.UploadId;
+  
+  try {
+    const parts = [];
+    let partNumber = 1;
+    
+    // Upload parts in chunks
+    for (let start = 0; start < fileData.length; start += chunkSize) {
+      const end = Math.min(start + chunkSize, fileData.length);
+      const chunk = fileData.slice(start, end);
+      
+      console.log(`Uploading part ${partNumber} (${chunk.length} bytes)`);
+      
+      const uploadPartCommand = new UploadPartCommand({
+        Bucket: bucketName,
+        Key: key,
+        PartNumber: partNumber,
+        UploadId: uploadId,
+        Body: chunk,
+      });
+      
+      const partResult = await s3Client.send(uploadPartCommand);
+      parts.push({
+        ETag: partResult.ETag,
+        PartNumber: partNumber,
+      });
+      
+      partNumber++;
+    }
+    
+    // Complete multipart upload
+    const completeCommand = new CompleteMultipartUploadCommand({
+      Bucket: bucketName,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: { Parts: parts },
+    });
+    
+    const result = await s3Client.send(completeCommand);
+    console.log(`Multipart upload completed for ${key}`);
+    return result;
+    
+  } catch (error) {
+    console.error(`Multipart upload failed for ${key}:`, error);
+    // You might want to abort the multipart upload here
+    throw error;
+  }
 }
 
 // Configure S3 client for Backblaze B2
@@ -141,15 +222,14 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
         console.log(`Uploading to B2: ${finalKey}`);
         console.log(`File size: ${fileData.length} bytes`);
 
-        // Upload to Backblaze B2 using S3-compatible API
-        const uploadCommand = new PutObjectCommand({
-          Bucket: BUCKET_NAME,
-          Key: finalKey,
-          Body: fileData,
-          ContentType: file.mimetype || 'application/octet-stream',
-        });
-
-        const uploadResult = await s3Client.send(uploadCommand);
+        // Use chunked upload for large files, regular upload for small files
+        const uploadResult = await uploadLargeFile(
+          fileData, 
+          BUCKET_NAME, 
+          finalKey, 
+          file.mimetype || 'application/octet-stream'
+        );
+        
         console.log(`Upload successful: ${finalKey}`);
 
         // Build CDN URL using your existing CDN
