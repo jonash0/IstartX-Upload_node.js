@@ -298,36 +298,34 @@
             
             console.log(`Starting queue processing for ${fileQueue.length} files (max ${maxConcurrentUploads} concurrent uploads)`);
 
+            function updateProgressText() {
+                const queueCount = fileQueue.length;
+                const activeCount = activeUploads;
+                let fileName = '';
+                let fileSizeStr = '';
+                if (activeUploads > 0 && fileQueue.length + activeUploads > 0) {
+                    // Show current file name and size if possible
+                    const currentFile = fileQueue[0] || null;
+                    if (currentFile) {
+                        fileName = currentFile.name;
+                        fileSizeStr = currentFile.size > 1024 * 1024 * 1024 ? 
+                            `${(currentFile.size / 1024 / 1024 / 1024).toFixed(2)}GB` : 
+                            `${(currentFile.size / 1024 / 1024).toFixed(1)}MB`;
+                    }
+                }
+                progressText.textContent = `Queue: ${queueCount} remaining | Active: ${activeCount}` + (fileName ? ` | Processing: ${fileName} (${fileSizeStr})` : '');
+            }
             return new Promise((resolve) => {
-                function processNext() {
-                    // Check if we can start more uploads
-                    while (activeUploads < maxConcurrentUploads && fileQueue.length > 0) {
-                        const file = fileQueue.shift();
-                        activeUploads++;
-                        
-                        const fileSizeStr = file.size > 1024 * 1024 * 1024 ? 
-                            `${(file.size / 1024 / 1024 / 1024).toFixed(2)}GB` : 
-                            `${(file.size / 1024 / 1024).toFixed(1)}MB`;
-                        
-                        progressText.textContent = `Processing file ${processedCount + 1}: ${file.name} (${fileSizeStr}) | Queue: ${fileQueue.length} remaining | Active: ${activeUploads}`;
-                        
-                        uploadFileInChunks(file, userId, serverUrl, (progress) => {
-                            // Calculate overall progress
-                            const overallProgress = ((processedCount + progress) / (uploadResults.length + uploadErrors.length + fileQueue.length + activeUploads)) * 100;
-                            progressFill.style.width = `${overallProgress}%`;
-                        }).then(result => {
-                            uploadResults.push(result);
                             console.log(`✅ Queue: Successfully uploaded ${file.name}`);
                         }).catch(error => {
                             console.error(`❌ Queue: Error uploading ${file.name}:`, error);
                             uploadErrors.push({ fileName: file.name, error: error.message });
                         }).finally(() => {
                             activeUploads--;
-                            processedCount++;
+                            updateProgressText();
                             
                             // Update results in real-time
                             displayResults({
-                                success: uploadResults.length > 0,
                                 userId: userId,
                                 summary: {
                                     total: processedCount + fileQueue.length + activeUploads,
@@ -337,10 +335,11 @@
                                 },
                                 files: uploadResults,
                                 errors: uploadErrors
+                                updateProgressText();
                             });
                             
                             // Check if we're done
-                            if (fileQueue.length === 0 && activeUploads === 0) {
+                                    updateProgressText();
                                 console.log(`🏁 Queue processing complete: ${uploadResults.length} successful, ${uploadErrors.length} failed`);
                                 resolve();
                             } else {
@@ -364,11 +363,12 @@
                 chunkSize = 5 * 1024 * 1024; // 5MB chunks for large files
                 maxConcurrentChunks = 4; // 4 concurrent chunks
             } else if (file.size > 10 * 1024 * 1024) { // Files > 10MB
+                    updateProgressText();
                 chunkSize = 2 * 1024 * 1024; // 2MB chunks for medium files
                 maxConcurrentChunks = 3; // 3 concurrent chunks
             } else { // Small files < 10MB
-                chunkSize = 1 * 1024 * 1024; // 1MB chunks for small files
-                maxConcurrentChunks = 2; // 2 concurrent chunks
+                        updateProgressText();
+                        processNext();
             }
 
             const totalChunks = Math.ceil(file.size / chunkSize);

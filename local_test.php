@@ -189,7 +189,7 @@ ini_set('max_execution_time', 600);
                 ✅ <strong>Supported:</strong> Images, Videos, Documents, Archives<br>
                 📏 <strong>File Size:</strong> Up to 2GB per file<br>
                 📊 <strong>Queue System:</strong> Unlimited files (processed in batches)<br>
-                🚀 <strong>Chunked Upload:</strong> Files sent in 10MB chunks for better performance
+                🚀 <strong>Adaptive Chunking:</strong> Smart chunk sizes (1-5MB) with concurrent uploads for optimal speed
             </div>
             
             <input type="text" id="userIdInput" placeholder="User ID (optional)" value="guest">
@@ -316,6 +316,12 @@ ini_set('max_execution_time', 600);
             
             console.log(`Starting queue processing for ${fileQueue.length} files (max ${maxConcurrentUploads} concurrent uploads)`);
 
+            function updateProgressText() {
+                const queueCount = fileQueue.length;
+                const activeCount = activeUploads;
+                progressText.textContent = `Queue: ${queueCount} remaining | Active: ${activeCount}`;
+            }
+
             return new Promise((resolve) => {
                 function processNext() {
                     // Check if we can start more uploads
@@ -327,7 +333,7 @@ ini_set('max_execution_time', 600);
                             `${(file.size / 1024 / 1024 / 1024).toFixed(2)}GB` : 
                             `${(file.size / 1024 / 1024).toFixed(1)}MB`;
                         
-                        progressText.textContent = `Processing file ${processedCount + 1}: ${file.name} (${fileSizeStr}) | Queue: ${fileQueue.length} remaining | Active: ${activeUploads}`;
+                        updateProgressText();
                         
                         uploadFileInChunks(file, userId, serverUrl, (progress) => {
                             // Calculate overall progress
@@ -342,6 +348,9 @@ ini_set('max_execution_time', 600);
                         }).finally(() => {
                             activeUploads--;
                             processedCount++;
+                            
+                            // Update progress text with new counts
+                            updateProgressText();
                             
                             // Update results in real-time
                             displayResults({
@@ -370,6 +379,7 @@ ini_set('max_execution_time', 600);
                 }
                 
                 // Start processing
+                updateProgressText();
                 processNext();
             });
         }
