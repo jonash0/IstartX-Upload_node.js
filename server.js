@@ -7,6 +7,13 @@ const { S3Client, PutObjectCommand, HeadObjectCommand, CreateMultipartUploadComm
 
 const app = express();
 
+// Set request timeout for large uploads
+app.use((req, res, next) => {
+  req.setTimeout(10 * 60 * 1000); // 10 minutes timeout
+  res.setTimeout(10 * 60 * 1000); // 10 minutes timeout
+  next();
+});
+
 // Increase payload limits for large uploads
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -129,16 +136,24 @@ function cleanupOrphanedChunks() {
 setInterval(cleanupOrphanedChunks, CLEANUP_CONFIG.orphanedChunkCleanupInterval);
 console.log(`🧹 Cleanup scheduler started: runs every ${CLEANUP_CONFIG.orphanedChunkCleanupInterval / 1000 / 60} minutes`);
 
-// Add CORS middleware for local testing
+// Add CORS middleware for local testing and production
 app.use((req, res, next) => {
+  // Set CORS headers
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Content-Length');
+  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  
+  // Handle preflight requests
   if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
+    console.log(`🔄 CORS preflight request for ${req.path}`);
+    res.status(200).end();
+    return;
   }
+  
+  // Log all requests for debugging
+  console.log(`📡 ${req.method} ${req.path} from ${req.get('origin') || 'no-origin'}`);
+  next();
 });
 
 // Function to generate random filename
@@ -264,6 +279,27 @@ app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    activeUploads: activeUploads.size,
+    memory: process.memoryUsage(),
+    version: '1.0.0'
+  });
+});
+
+// Connection test endpoint
+app.get('/ping', (req, res) => {
+  res.json({ 
+    pong: true, 
+    timestamp: Date.now(),
+    server: 'IstartX Upload Server'
+  });
+});
+
 // Serve upload form for panel integration
 app.get('/panel/upload', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel-upload.html'));
@@ -273,6 +309,14 @@ app.get('/panel/upload', (req, res) => {
 app.post('/upload/init', (req, res) => {
   try {
     const { fileName, fileSize, userId = 'guest' } = req.body;
+    
+    if (!fileName || !fileSize) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required fields: fileName and fileSize' 
+      });
+    }
+    
     const uploadId = crypto.randomBytes(16).toString('hex');
     const finalFileName = generateRandomFilename(fileName);
     
@@ -285,15 +329,16 @@ app.post('/upload/init', (req, res) => {
       createdAt: Date.now()
     });
     
-    console.log(`Initialized chunked upload: ${uploadId} for ${fileName}`);
+    console.log(`✅ Initialized chunked upload: ${uploadId} for ${fileName} (${fileSize} bytes)`);
     
     res.json({
       success: true,
       uploadId: uploadId,
-      finalFileName: finalFileName
+      finalFileName: finalFileName,
+      timestamp: Date.now()
     });
   } catch (error) {
-    console.error('Upload init error:', error);
+    console.error('❌ Upload init error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -734,8 +779,9 @@ if (!fs.existsSync(path.join(__dirname, 'uploads/chunks'))) {
 }
 
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}/`);
+const HOST = process.env.HOST || '0.0.0.0'; // Listen on all interfaces for production
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Server running at http://${HOST}:${PORT}/`);
   
   // Run initial cleanup on startup
   console.log('🧹 Running initial cleanup on startup...');

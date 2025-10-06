@@ -341,78 +341,118 @@
 
             console.log(`🚀 Starting chunked upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) in ${totalChunks} chunks of ${chunkSize / 1024 / 1024}MB each`);
 
-            // Step 1: Initialize upload (Network Call #1)
-            console.log(`📡 Network Call #1: Initializing upload for ${file.name}`);
-            const initResponse = await fetch(`${serverUrl}/upload/init`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    fileName: file.name,
-                    fileSize: file.size,
-                    userId: userId
-                })
-            });
-
-            if (!initResponse.ok) {
-                throw new Error(`Failed to initialize upload: ${initResponse.status}`);
-            }
-
-            const initResult = await initResponse.json();
-            const uploadId = initResult.uploadId;
-
-            console.log(`✅ Upload initialized with ID: ${uploadId}`);
-
-            // Step 2: Upload chunks (Separate network call for each chunk)
-            for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-                const start = chunkIndex * chunkSize;
-                const end = Math.min(start + chunkSize, file.size);
-                const chunk = file.slice(start, end);
-
-                const formData = new FormData();
-                formData.append('uploadId', uploadId);
-                formData.append('chunkIndex', chunkIndex.toString());
-                formData.append('chunk', chunk);
-
-                console.log(`📡 Network Call #${chunkIndex + 2}: Uploading chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(2)}MB) for ${file.name}`);
-
-                // Add delay to make network calls more visible
-                if (chunkIndex > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between chunks
+            try {
+                // Test connection first
+                console.log(`🔍 Testing connection to ${serverUrl}...`);
+                const pingResponse = await fetch(`${serverUrl}/ping`, {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+                
+                if (!pingResponse.ok) {
+                    throw new Error(`Server connection test failed: ${pingResponse.status}`);
                 }
+                
+                const pingData = await pingResponse.json();
+                console.log(`✅ Connection test successful:`, pingData);
 
-                const chunkResponse = await fetch(`${serverUrl}/upload/chunk`, {
+                // Step 1: Initialize upload (Network Call #1)
+                console.log(`📡 Network Call #1: Initializing upload for ${file.name}`);
+                const initResponse = await fetch(`${serverUrl}/upload/init`, {
                     method: 'POST',
-                    body: formData
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        fileName: file.name,
+                        fileSize: file.size,
+                        userId: userId
+                    })
                 });
 
-                if (!chunkResponse.ok) {
-                    throw new Error(`Failed to upload chunk ${chunkIndex}: ${chunkResponse.status}`);
+                if (!initResponse.ok) {
+                    const errorText = await initResponse.text();
+                    throw new Error(`Failed to initialize upload: ${initResponse.status} - ${errorText}`);
                 }
 
-                const chunkResult = await chunkResponse.json();
-                console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully (Total chunks received: ${chunkResult.receivedChunks})`);
+                const initResult = await initResponse.json();
+                if (!initResult.success) {
+                    throw new Error(initResult.error || 'Upload initialization failed');
+                }
+                
+                const uploadId = initResult.uploadId;
+                console.log(`✅ Upload initialized with ID: ${uploadId}`);
 
-                // Update progress
-                const progress = (chunkIndex + 1) / totalChunks;
-                progressCallback(progress);
+                // Step 2: Upload chunks (Separate network call for each chunk)
+                for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                    const start = chunkIndex * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+
+                    const formData = new FormData();
+                    formData.append('uploadId', uploadId);
+                    formData.append('chunkIndex', chunkIndex.toString());
+                    formData.append('chunk', chunk);
+
+                    console.log(`📡 Network Call #${chunkIndex + 2}: Uploading chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(2)}MB) for ${file.name}`);
+
+                    // Add delay to make network calls more visible
+                    if (chunkIndex > 0) {
+                        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between chunks
+                    }
+
+                    const chunkResponse = await fetch(`${serverUrl}/upload/chunk`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!chunkResponse.ok) {
+                        const errorText = await chunkResponse.text();
+                        throw new Error(`Failed to upload chunk ${chunkIndex}: ${chunkResponse.status} - ${errorText}`);
+                    }
+
+                    const chunkResult = await chunkResponse.json();
+                    if (!chunkResult.success) {
+                        throw new Error(`Chunk upload failed: ${chunkResult.error}`);
+                    }
+                    
+                    console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully (Total chunks received: ${chunkResult.receivedChunks})`);
+
+                    // Update progress
+                    const progress = (chunkIndex + 1) / totalChunks;
+                    progressCallback(progress);
+                }
+
+                // Step 3: Complete upload (Final network call)
+                console.log(`📡 Network Call #${totalChunks + 2}: Completing upload for ${file.name}`);
+                const completeResponse = await fetch(`${serverUrl}/upload/complete`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ uploadId: uploadId })
+                });
+
+                if (!completeResponse.ok) {
+                    const errorText = await completeResponse.text();
+                    throw new Error(`Failed to complete upload: ${completeResponse.status} - ${errorText}`);
+                }
+
+                const result = await completeResponse.json();
+                if (!result.success) {
+                    throw new Error(result.error || 'Upload completion failed');
+                }
+                
+                console.log(`🎉 Successfully uploaded ${file.name} → ${result.finalFileName} (Total network calls: ${totalChunks + 2})`);
+                
+                return result;
+                
+            } catch (error) {
+                console.error(`❌ Upload failed for ${file.name}:`, error);
+                throw error;
             }
-
-            // Step 3: Complete upload (Final network call)
-            console.log(`📡 Network Call #${totalChunks + 2}: Completing upload for ${file.name}`);
-            const completeResponse = await fetch(`${serverUrl}/upload/complete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ uploadId: uploadId })
-            });
-
-            if (!completeResponse.ok) {
-                throw new Error(`Failed to complete upload: ${completeResponse.status}`);
-            }
-
-            const result = await completeResponse.json();
-            console.log(`🎉 Successfully uploaded ${file.name} → ${result.finalFileName} (Total network calls: ${totalChunks + 2})`);
-            
-            return result;
         }
 
         function displayResults(data) {
