@@ -25,6 +25,7 @@ function generateRandomFilename(originalFilename) {
   const fileInfo = path.parse(originalFilename);
   const extension = fileInfo.ext;
   const randomString = crypto.randomBytes(16).toString('hex');
+  console.log(`Random filename generation: ${originalFilename} → ${randomString}${extension}`);
   return `${randomString}${extension}`;
 }
 
@@ -97,9 +98,13 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
       
       try {
         console.log(`Processing file ${i + 1}/${req.files.length}: ${file.originalname}`);
+        console.log(`File path: ${file.path}`);
+        console.log(`File size: ${file.size} bytes`);
+        console.log(`MIME type: ${file.mimetype}`);
         
         // Generate random filename
         const randomFilename = generateRandomFilename(file.originalname);
+        console.log(`Generated random filename: ${randomFilename}`);
         
         // Check if random filename exists (very unlikely but just in case)
         let finalFilename = randomFilename;
