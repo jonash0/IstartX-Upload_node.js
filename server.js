@@ -6,14 +6,25 @@ const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
-// Configure multer for larger files (100MB limit)
+// Configure multer for chunk uploads (10MB chunks)
+const chunkUpload = multer({ 
+  dest: path.join(__dirname, 'uploads/chunks/'),
+  limits: {
+    fileSize: 15 * 1024 * 1024, // 15MB per chunk (buffer for 10MB + headers)
+  }
+});
+
+// Configure multer for legacy single file uploads (2GB limit)
 const upload = multer({ 
   dest: path.join(__dirname, 'uploads/'),
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB
+    fileSize: 2 * 1024 * 1024 * 1024, // 2GB
     files: 10 // Maximum 10 files at once
   }
 });
+
+// Store for tracking multipart uploads
+const activeUploads = new Map();
 
 // Add CORS middleware for local testing
 app.use((req, res, next) => {
@@ -38,7 +49,7 @@ function generateRandomFilename(originalFilename) {
 
 // Function to upload large files using multipart upload
 async function uploadLargeFile(fileData, bucketName, key, contentType) {
-  const chunkSize = 5 * 1024 * 1024; // 5MB chunks (minimum for S3)
+  const chunkSize = 25 * 1024 * 1024; // 25MB chunks for S3 multipart (large file threshold)
   
   if (fileData.length <= chunkSize) {
     // File is small enough for regular upload
@@ -148,6 +159,127 @@ app.get('/test', (req, res) => {
 // Serve upload form for panel integration
 app.get('/panel/upload', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel-upload.html'));
+});
+
+// Initialize chunked upload
+app.post('/upload/init', (req, res) => {
+  try {
+    const { fileName, fileSize, userId = 'guest' } = req.body;
+    const uploadId = crypto.randomBytes(16).toString('hex');
+    const finalFileName = generateRandomFilename(fileName);
+    
+    activeUploads.set(uploadId, {
+      fileName: finalFileName,
+      originalFileName: fileName,
+      userId: userId,
+      fileSize: parseInt(fileSize),
+      chunks: new Map(),
+      createdAt: Date.now()
+    });
+    
+    console.log(`Initialized chunked upload: ${uploadId} for ${fileName}`);
+    
+    res.json({
+      success: true,
+      uploadId: uploadId,
+      finalFileName: finalFileName
+    });
+  } catch (error) {
+    console.error('Upload init error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Upload individual chunk
+app.post('/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
+  try {
+    const { uploadId, chunkIndex } = req.body;
+    const chunkFile = req.file;
+    
+    if (!chunkFile) {
+      return res.status(400).json({ success: false, error: 'No chunk data' });
+    }
+    
+    const uploadInfo = activeUploads.get(uploadId);
+    if (!uploadInfo) {
+      return res.status(404).json({ success: false, error: 'Upload session not found' });
+    }
+    
+    // Store chunk info
+    uploadInfo.chunks.set(parseInt(chunkIndex), {
+      path: chunkFile.path,
+      size: chunkFile.size
+    });
+    
+    console.log(`Received chunk ${chunkIndex} for upload ${uploadId} (${chunkFile.size} bytes)`);
+    
+    res.json({
+      success: true,
+      chunkIndex: parseInt(chunkIndex),
+      receivedChunks: uploadInfo.chunks.size
+    });
+  } catch (error) {
+    console.error('Chunk upload error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Complete chunked upload
+app.post('/upload/complete', async (req, res) => {
+  try {
+    const { uploadId } = req.body;
+    const uploadInfo = activeUploads.get(uploadId);
+    
+    if (!uploadInfo) {
+      return res.status(404).json({ success: false, error: 'Upload session not found' });
+    }
+    
+    console.log(`Completing upload ${uploadId} with ${uploadInfo.chunks.size} chunks`);
+    
+    // Combine chunks into final file
+    const finalKey = `${uploadInfo.userId}/${uploadInfo.fileName}`;
+    const chunks = Array.from(uploadInfo.chunks.entries()).sort(([a], [b]) => a - b);
+    
+    // Read all chunks and combine
+    const combinedBuffer = Buffer.concat(
+      chunks.map(([index, chunkInfo]) => fs.readFileSync(chunkInfo.path))
+    );
+    
+    console.log(`Combined file size: ${combinedBuffer.length} bytes`);
+    
+    // Upload to B2 using our existing multipart function
+    await uploadLargeFile(combinedBuffer, BUCKET_NAME, finalKey, 'application/octet-stream');
+    
+    // Cleanup chunks
+    chunks.forEach(([index, chunkInfo]) => {
+      try {
+        fs.unlinkSync(chunkInfo.path);
+      } catch (cleanupError) {
+        console.error(`Error cleaning up chunk ${chunkInfo.path}:`, cleanupError);
+      }
+    });
+    
+    // Remove from active uploads
+    activeUploads.delete(uploadId);
+    
+    const cdnUrl = `https://cdn.istartx.io/${finalKey}`;
+    
+    res.json({
+      success: true,
+      userId: uploadInfo.userId,
+      originalFileName: uploadInfo.originalFileName,
+      finalFileName: uploadInfo.fileName,
+      cdnUrl: cdnUrl,
+      b2Key: finalKey,
+      fileSize: combinedBuffer.length
+    });
+    
+    console.log(`Successfully completed chunked upload: ${uploadInfo.originalFileName} → ${uploadInfo.fileName}`);
+    
+  } catch (error) {
+    console.error('Upload complete error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // API endpoint for upload (can be used via AJAX)
@@ -361,9 +493,12 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
   }
 });
 
-// Ensure uploads directory exists
+// Ensure uploads directories exist
 if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
   fs.mkdirSync(path.join(__dirname, 'uploads'));
+}
+if (!fs.existsSync(path.join(__dirname, 'uploads/chunks'))) {
+  fs.mkdirSync(path.join(__dirname, 'uploads/chunks'), { recursive: true });
 }
 
 const PORT = process.env.PORT || 3000;
