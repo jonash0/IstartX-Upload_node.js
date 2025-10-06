@@ -5,6 +5,9 @@ const path = require('path');
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 
+// Load environment variables from .env file
+require('dotenv').config();
+
 const app = express();
 const upload = multer({ dest: path.join(__dirname, 'uploads/') }); // Temp storage for incoming files
 
@@ -46,7 +49,12 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'upload.html'));
 });
 
-// Serve the local test page
+// Serve the local test page at /local_test.html
+app.get('/local_test.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'local_test.html'));
+});
+
+// Serve the local test page at /test as well (backup route)
 app.get('/test', (req, res) => {
   res.sendFile(path.join(__dirname, 'local_test.html'));
 });
@@ -131,15 +139,15 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
 
         const uploadResult = await s3Client.send(uploadCommand);
 
-        // Build CDN URL using custom domain
-        const objectUrl = `https://cdn.istartx.io/${finalKey}`;
+        // Build CDN URL using your existing CDN
+        const cdnUrl = `https://cdn.istartx.io/${finalKey}`;
 
         results.push({
           success: true,
           userId: userId,
           originalFileName: file.originalname,
           finalFileName: finalFilename,
-          cdnUrl: objectUrl,
+          cdnUrl: cdnUrl,
           b2Key: finalKey,
           fileSize: file.size,
           mimeType: file.mimetype,
