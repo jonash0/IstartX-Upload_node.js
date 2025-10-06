@@ -383,7 +383,11 @@
                 const uploadId = initResult.uploadId;
                 console.log(`✅ Upload initialized with ID: ${uploadId}`);
 
-                // Step 2: Upload chunks (Separate network call for each chunk)
+                // Step 2: Upload chunks (Concurrent chunk upload - 2 chunks at a time)
+                const maxConcurrentChunks = 2; // Upload 2 chunks simultaneously
+                const chunkPromises = [];
+                let completedChunks = 0;
+
                 for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
                     const start = chunkIndex * chunkSize;
                     const end = Math.min(start + chunkSize, file.size);
@@ -394,34 +398,48 @@
                     formData.append('chunkIndex', chunkIndex.toString());
                     formData.append('chunk', chunk);
 
-                    console.log(`📡 Network Call #${chunkIndex + 2}: Uploading chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(2)}MB) for ${file.name}`);
+                    console.log(`📡 Network Call #${chunkIndex + 2}: Starting upload of chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(2)}MB) for ${file.name}`);
 
-                    // Add delay to make network calls more visible
-                    if (chunkIndex > 0) {
-                        await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between chunks
-                    }
-
-                    const chunkResponse = await fetch(`${serverUrl}/upload/chunk`, {
+                    const chunkPromise = fetch(`${serverUrl}/upload/chunk`, {
                         method: 'POST',
                         body: formData
+                    }).then(async (chunkResponse) => {
+                        if (!chunkResponse.ok) {
+                            const errorText = await chunkResponse.text();
+                            throw new Error(`Failed to upload chunk ${chunkIndex}: ${chunkResponse.status} - ${errorText}`);
+                        }
+
+                        const chunkResult = await chunkResponse.json();
+                        if (!chunkResult.success) {
+                            throw new Error(`Chunk upload failed: ${chunkResult.error}`);
+                        }
+                        
+                        console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully (Total chunks received: ${chunkResult.receivedChunks})`);
+                        
+                        completedChunks++;
+                        const progress = completedChunks / totalChunks;
+                        progressCallback(progress);
+                        
+                        return chunkResult;
                     });
 
-                    if (!chunkResponse.ok) {
-                        const errorText = await chunkResponse.text();
-                        throw new Error(`Failed to upload chunk ${chunkIndex}: ${chunkResponse.status} - ${errorText}`);
-                    }
+                    chunkPromises.push(chunkPromise);
 
-                    const chunkResult = await chunkResponse.json();
-                    if (!chunkResult.success) {
-                        throw new Error(`Chunk upload failed: ${chunkResult.error}`);
+                    // Wait for some chunks to complete before starting more (limit concurrency)
+                    if (chunkPromises.length >= maxConcurrentChunks) {
+                        await Promise.race(chunkPromises);
+                        // Remove completed promises
+                        for (let i = chunkPromises.length - 1; i >= 0; i--) {
+                            if (await chunkPromises[i].then(() => true).catch(() => false)) {
+                                chunkPromises.splice(i, 1);
+                                break;
+                            }
+                        }
                     }
-                    
-                    console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully (Total chunks received: ${chunkResult.receivedChunks})`);
-
-                    // Update progress
-                    const progress = (chunkIndex + 1) / totalChunks;
-                    progressCallback(progress);
                 }
+
+                // Wait for all remaining chunks to complete
+                await Promise.all(chunkPromises);
 
                 // Step 3: Complete upload (Final network call)
                 console.log(`📡 Network Call #${totalChunks + 2}: Completing upload for ${file.name}`);
