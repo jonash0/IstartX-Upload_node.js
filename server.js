@@ -5,9 +5,6 @@ const path = require('path');
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
 
-// Load environment variables from .env file
-require('dotenv').config();
-
 const app = express();
 const upload = multer({ dest: path.join(__dirname, 'uploads/') }); // Temp storage for incoming files
 
@@ -31,18 +28,25 @@ function generateRandomFilename(originalFilename) {
   return `${randomString}${extension}`;
 }
 
-// Configure S3 client for Tigris Object Storage
+// Configure S3 client for Backblaze B2
 const s3Client = new S3Client({
-  region: process.env.AWS_REGION || 'auto',
-  endpoint: process.env.AWS_ENDPOINT_URL_S3 || 'https://fly.storage.tigris.dev',
+  region: 'us-east-005',
+  endpoint: 'https://s3.us-east-005.backblazeb2.com',
   forcePathStyle: true,
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    accessKeyId: '005b37c1a06d8720000000003',
+    secretAccessKey: 'K005bgQ4iRKPrjaqphNadA7p5fulKnQ',
   },
 });
 
-const BUCKET_NAME = process.env.BUCKET_NAME || 'istartx-upload-bucket';
+const BUCKET_NAME = 'ISTARTX';
+
+// Debug: Log configuration
+console.log('S3 Configuration:');
+console.log('- Region: us-east-005');
+console.log('- Endpoint: https://s3.us-east-005.backblazeb2.com');
+console.log('- Bucket: ISTARTX');
+console.log('- Access Key: Set');
 
 // Serve the upload form
 app.get('/', (req, res) => {
@@ -129,7 +133,10 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
         const fileData = fs.readFileSync(file.path);
         const finalKey = `${userId}/${finalFilename}`;
 
-        // Upload to Tigris using S3-compatible API
+        console.log(`Uploading to B2: ${finalKey}`);
+        console.log(`File size: ${fileData.length} bytes`);
+
+        // Upload to Backblaze B2 using S3-compatible API
         const uploadCommand = new PutObjectCommand({
           Bucket: BUCKET_NAME,
           Key: finalKey,
@@ -138,6 +145,7 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
         });
 
         const uploadResult = await s3Client.send(uploadCommand);
+        console.log(`Upload successful: ${finalKey}`);
 
         // Build CDN URL using your existing CDN
         const cdnUrl = `https://cdn.istartx.io/${finalKey}`;
