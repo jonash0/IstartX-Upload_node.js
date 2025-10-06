@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Server Admin - Storage Management</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .status-card {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        .status-header {
+            font-size: 18px;
+            font-weight: bold;
+            color: #495057;
+            margin-bottom: 15px;
+        }
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+        .status-item {
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #007bff;
+        }
+        .status-label {
+            font-size: 12px;
+            color: #6c757d;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .status-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #212529;
+        }
+        .status-unit {
+            font-size: 14px;
+            color: #6c757d;
+        }
+        .cleanup-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        .cleanup-btn:hover {
+            background: #c82333;
+        }
+        .refresh-btn {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        .refresh-btn:hover {
+            background: #218838;
+        }
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .config-section {
+            margin-top: 30px;
+        }
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .server-select {
+            margin: 20px 0;
+            text-align: center;
+        }
+        .server-select select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 0 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛠️ Upload Server Admin Panel</h1>
+        
+        <div class="server-select">
+            <label>Server:</label>
+            <select id="serverSelect">
+                <option value="http://localhost:3000">Local Development (localhost:3000)</option>
+                <option value="https://istartx-upload-demo.fly.dev">Production (Fly.io)</option>
+            </select>
+            <button class="refresh-btn" onclick="loadStatus()">🔄 Refresh Status</button>
+            <button class="cleanup-btn" onclick="runCleanup()">🧹 Run Manual Cleanup</button>
+        </div>
+        
+        <div id="statusContainer">
+            <div class="warning">
+                Click "Refresh Status" to load server storage information.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const serverSelect = document.getElementById('serverSelect');
+        const statusContainer = document.getElementById('statusContainer');
+
+        async function loadStatus() {
+            const serverUrl = serverSelect.value;
+            
+            try {
+                statusContainer.innerHTML = '<div class="warning">Loading storage status...</div>';
+                
+                const response = await fetch(`${serverUrl}/admin/storage-status`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    displayStatus(data);
+                } else {
+                    throw new Error(data.error || 'Unknown error');
+                }
+                
+            } catch (error) {
+                console.error('Error loading status:', error);
+                statusContainer.innerHTML = `
+                    <div class="error">
+                        <strong>Error loading status:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        async function runCleanup() {
+            const serverUrl = serverSelect.value;
+            
+            if (!confirm('Are you sure you want to run manual cleanup? This will remove orphaned chunks and expired upload sessions.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${serverUrl}/admin/cleanup`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusContainer.innerHTML = `
+                        <div class="success">
+                            <strong>✅ Cleanup completed successfully!</strong><br>
+                            ${data.message}
+                        </div>
+                    ` + statusContainer.innerHTML;
+                    
+                    // Refresh status after cleanup
+                    setTimeout(loadStatus, 2000);
+                } else {
+                    throw new Error(data.error || 'Cleanup failed');
+                }
+                
+            } catch (error) {
+                console.error('Error running cleanup:', error);
+                statusContainer.innerHTML = `
+                    <div class="error">
+                        <strong>❌ Cleanup failed:</strong> ${error.message}
+                    </div>
+                ` + statusContainer.innerHTML;
+            }
+        }
+
+        function displayStatus(data) {
+            const storage = data.storage;
+            const config = data.cleanupConfig;
+            
+            const html = `
+                <div class="status-card">
+                    <div class="status-header">📊 Storage Overview</div>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <div class="status-label">Total Files</div>
+                            <div class="status-value">${storage.totalFiles}</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">Total Size</div>
+                            <div class="status-value">${storage.totalSizeMB} <span class="status-unit">MB</span></div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">Active Uploads</div>
+                            <div class="status-value">${storage.activeUploads}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="status-card">
+                    <div class="status-header">📁 File Details</div>
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <div class="status-label">Chunk Files</div>
+                            <div class="status-value">${storage.chunks.files}</div>
+                            <div class="status-unit">${storage.chunks.sizeMB} MB</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="status-label">Temp Files</div>
+                            <div class="status-value">${storage.tempFiles.files}</div>
+                            <div class="status-unit">${storage.tempFiles.sizeMB} MB</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="status-card config-section">
+                    <div class="status-header">⚙️ Cleanup Configuration</div>
+                    <div class="config-item">
+                        <span>Cleanup Interval:</span>
+                        <span>${config.orphanedChunkCleanupInterval / 1000 / 60} minutes</span>
+                    </div>
+                    <div class="config-item">
+                        <span>Upload Session Timeout:</span>
+                        <span>${config.uploadSessionTimeout / 1000 / 60 / 60} hours</span>
+                    </div>
+                    <div class="config-item">
+                        <span>Max Chunk Age:</span>
+                        <span>${config.maxChunkAge / 1000 / 60 / 60} hours</span>
+                    </div>
+                </div>
+
+                ${storage.totalFiles > 0 ? `
+                    <div class="warning">
+                        <strong>⚠️ Storage Usage:</strong> 
+                        There are ${storage.totalFiles} temporary files using ${storage.totalSizeMB} MB of disk space.
+                        ${storage.chunks.files > 0 ? `${storage.chunks.files} chunk files will be automatically cleaned up.` : ''}
+                    </div>
+                ` : `
+                    <div class="success">
+                        <strong>✅ Clean Storage:</strong> No temporary files consuming disk space.
+                    </div>
+                `}
+            `;
+            
+            statusContainer.innerHTML = html;
+        }
+
+        // Auto-refresh every 30 seconds
+        setInterval(() => {
+            if (statusContainer.innerHTML.includes('status-card')) {
+                loadStatus();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

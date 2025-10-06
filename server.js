@@ -33,6 +33,102 @@ const upload = multer({
 // Store for tracking multipart uploads
 const activeUploads = new Map();
 
+// Cleanup configuration
+const CLEANUP_CONFIG = {
+  orphanedChunkCleanupInterval: 60 * 60 * 1000, // 1 hour
+  uploadSessionTimeout: 24 * 60 * 60 * 1000, // 24 hours
+  maxChunkAge: 2 * 60 * 60 * 1000 // 2 hours for orphaned chunks
+};
+
+// Cleanup function for orphaned chunks and expired upload sessions
+function cleanupOrphanedChunks() {
+  const uploadsDir = path.join(__dirname, 'uploads');
+  const chunksDir = path.join(__dirname, 'uploads/chunks');
+  const now = Date.now();
+  
+  console.log('🧹 Starting cleanup of orphaned chunks and expired sessions...');
+  
+  try {
+    // Clean up expired upload sessions
+    let expiredSessions = 0;
+    for (const [uploadId, uploadInfo] of activeUploads.entries()) {
+      if (now - uploadInfo.createdAt > CLEANUP_CONFIG.uploadSessionTimeout) {
+        console.log(`🗑️ Removing expired upload session: ${uploadId}`);
+        
+        // Clean up chunks for this session
+        for (const [chunkIndex, chunkInfo] of uploadInfo.chunks.entries()) {
+          try {
+            if (fs.existsSync(chunkInfo.path)) {
+              fs.unlinkSync(chunkInfo.path);
+              console.log(`   ├─ Removed chunk ${chunkIndex}: ${chunkInfo.path}`);
+            }
+          } catch (error) {
+            console.error(`   ├─ Error removing chunk ${chunkInfo.path}:`, error.message);
+          }
+        }
+        
+        activeUploads.delete(uploadId);
+        expiredSessions++;
+      }
+    }
+    
+    // Clean up orphaned chunk files (files without active upload sessions)
+    let orphanedChunks = 0;
+    if (fs.existsSync(chunksDir)) {
+      const chunkFiles = fs.readdirSync(chunksDir);
+      
+      for (const chunkFile of chunkFiles) {
+        const chunkPath = path.join(chunksDir, chunkFile);
+        
+        try {
+          const stats = fs.statSync(chunkPath);
+          const fileAge = now - stats.mtime.getTime();
+          
+          if (fileAge > CLEANUP_CONFIG.maxChunkAge) {
+            fs.unlinkSync(chunkPath);
+            orphanedChunks++;
+            console.log(`🗑️ Removed orphaned chunk: ${chunkFile} (age: ${Math.round(fileAge / 1000 / 60)} minutes)`);
+          }
+        } catch (error) {
+          console.error(`Error processing chunk file ${chunkFile}:`, error.message);
+        }
+      }
+    }
+    
+    // Clean up orphaned temp files in main uploads directory
+    let orphanedTempFiles = 0;
+    if (fs.existsSync(uploadsDir)) {
+      const tempFiles = fs.readdirSync(uploadsDir).filter(file => !file.includes('chunks'));
+      
+      for (const tempFile of tempFiles) {
+        const tempPath = path.join(uploadsDir, tempFile);
+        
+        try {
+          const stats = fs.statSync(tempPath);
+          const fileAge = now - stats.mtime.getTime();
+          
+          if (fileAge > CLEANUP_CONFIG.maxChunkAge) {
+            fs.unlinkSync(tempPath);
+            orphanedTempFiles++;
+            console.log(`🗑️ Removed orphaned temp file: ${tempFile} (age: ${Math.round(fileAge / 1000 / 60)} minutes)`);
+          }
+        } catch (error) {
+          console.error(`Error processing temp file ${tempFile}:`, error.message);
+        }
+      }
+    }
+    
+    console.log(`✅ Cleanup completed: ${expiredSessions} expired sessions, ${orphanedChunks} orphaned chunks, ${orphanedTempFiles} orphaned temp files removed`);
+    
+  } catch (error) {
+    console.error('❌ Error during cleanup:', error);
+  }
+}
+
+// Start periodic cleanup
+setInterval(cleanupOrphanedChunks, CLEANUP_CONFIG.orphanedChunkCleanupInterval);
+console.log(`🧹 Cleanup scheduler started: runs every ${CLEANUP_CONFIG.orphanedChunkCleanupInterval / 1000 / 60} minutes`);
+
 // Add CORS middleware for local testing
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -163,6 +259,11 @@ app.get('/test', (req, res) => {
   res.sendFile(path.join(__dirname, 'local_test.html'));
 });
 
+// Serve the admin panel
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
 // Serve upload form for panel integration
 app.get('/panel/upload', (req, res) => {
   res.sendFile(path.join(__dirname, 'panel-upload.html'));
@@ -209,6 +310,13 @@ app.post('/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
     
     const uploadInfo = activeUploads.get(uploadId);
     if (!uploadInfo) {
+      // Clean up the uploaded chunk file since upload session doesn't exist
+      try {
+        fs.unlinkSync(chunkFile.path);
+        console.log(`🗑️ Cleaned up orphaned chunk: ${chunkFile.path} (no upload session)`);
+      } catch (cleanupError) {
+        console.error(`Error cleaning up orphaned chunk:`, cleanupError);
+      }
       return res.status(404).json({ success: false, error: 'Upload session not found' });
     }
     
@@ -227,6 +335,17 @@ app.post('/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
     });
   } catch (error) {
     console.error('Chunk upload error:', error);
+    
+    // Clean up the chunk file on error
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log(`🗑️ Cleaned up chunk due to error: ${req.file.path}`);
+      } catch (cleanupError) {
+        console.error(`Error cleaning up chunk on error:`, cleanupError);
+      }
+    }
+    
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -257,19 +376,36 @@ app.post('/upload/complete', async (req, res) => {
     // Upload to B2 using our existing multipart function
     await uploadLargeFile(combinedBuffer, BUCKET_NAME, finalKey, 'application/octet-stream');
     
-    // Cleanup chunks
+    // Cleanup chunks (enhanced cleanup)
+    let cleanedChunks = 0;
+    let failedCleanups = 0;
     chunks.forEach(([index, chunkInfo]) => {
       try {
-        fs.unlinkSync(chunkInfo.path);
+        if (fs.existsSync(chunkInfo.path)) {
+          fs.unlinkSync(chunkInfo.path);
+          cleanedChunks++;
+        }
       } catch (cleanupError) {
         console.error(`Error cleaning up chunk ${chunkInfo.path}:`, cleanupError);
+        failedCleanups++;
       }
     });
+    
+    console.log(`🧹 Cleanup: ${cleanedChunks} chunks removed, ${failedCleanups} failed cleanups`);
     
     // Remove from active uploads
     activeUploads.delete(uploadId);
     
+    // Generate both CDN and direct B2 URLs for testing
     const cdnUrl = `https://cdn.istartx.io/${finalKey}`;
+    const b2Url = `https://s3.us-east-005.backblazeb2.com/ISTARTX/${finalKey}`;
+    const b2PublicUrl = `https://f005.backblazeb2.com/file/ISTARTX/${finalKey}`;
+    
+    console.log(`File uploaded successfully:`);
+    console.log(`- B2 Key: ${finalKey}`);
+    console.log(`- CDN URL: ${cdnUrl}`);
+    console.log(`- B2 Direct URL: ${b2Url}`);
+    console.log(`- B2 Public URL: ${b2PublicUrl}`);
     
     res.json({
       success: true,
@@ -277,6 +413,8 @@ app.post('/upload/complete', async (req, res) => {
       originalFileName: uploadInfo.originalFileName,
       finalFileName: uploadInfo.fileName,
       cdnUrl: cdnUrl,
+      b2Url: b2Url,
+      b2PublicUrl: b2PublicUrl,
       b2Key: finalKey,
       fileSize: combinedBuffer.length
     });
@@ -285,6 +423,84 @@ app.post('/upload/complete', async (req, res) => {
     
   } catch (error) {
     console.error('Upload complete error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Manual cleanup endpoint (for admin use)
+app.post('/admin/cleanup', (req, res) => {
+  try {
+    cleanupOrphanedChunks();
+    res.json({ success: true, message: 'Manual cleanup initiated' });
+  } catch (error) {
+    console.error('Manual cleanup error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Storage status endpoint
+app.get('/admin/storage-status', (req, res) => {
+  try {
+    const uploadsDir = path.join(__dirname, 'uploads');
+    const chunksDir = path.join(__dirname, 'uploads/chunks');
+    
+    let totalFiles = 0;
+    let totalSize = 0;
+    let chunkFiles = 0;
+    let chunkSize = 0;
+    let tempFiles = 0;
+    let tempSize = 0;
+    
+    // Count chunk files
+    if (fs.existsSync(chunksDir)) {
+      const chunks = fs.readdirSync(chunksDir);
+      chunkFiles = chunks.length;
+      chunks.forEach(chunk => {
+        try {
+          const stats = fs.statSync(path.join(chunksDir, chunk));
+          chunkSize += stats.size;
+        } catch (error) {
+          // Ignore errors for individual files
+        }
+      });
+    }
+    
+    // Count temp files
+    if (fs.existsSync(uploadsDir)) {
+      const temps = fs.readdirSync(uploadsDir).filter(file => !file.includes('chunks'));
+      tempFiles = temps.length;
+      temps.forEach(temp => {
+        try {
+          const stats = fs.statSync(path.join(uploadsDir, temp));
+          tempSize += stats.size;
+        } catch (error) {
+          // Ignore errors for individual files
+        }
+      });
+    }
+    
+    totalFiles = chunkFiles + tempFiles;
+    totalSize = chunkSize + tempSize;
+    
+    res.json({
+      success: true,
+      storage: {
+        totalFiles: totalFiles,
+        totalSizeMB: Math.round(totalSize / 1024 / 1024 * 100) / 100,
+        chunks: {
+          files: chunkFiles,
+          sizeMB: Math.round(chunkSize / 1024 / 1024 * 100) / 100
+        },
+        tempFiles: {
+          files: tempFiles,
+          sizeMB: Math.round(tempSize / 1024 / 1024 * 100) / 100
+        },
+        activeUploads: activeUploads.size
+      },
+      cleanupConfig: CLEANUP_CONFIG
+    });
+  } catch (error) {
+    console.error('Storage status error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -371,8 +587,15 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
         
         console.log(`Upload successful: ${finalKey}`);
 
-        // Build CDN URL using your existing CDN
+        // Build multiple URLs for testing which one works
         const cdnUrl = `https://cdn.istartx.io/${finalKey}`;
+        const b2Url = `https://s3.us-east-005.backblazeb2.com/ISTARTX/${finalKey}`;
+        const b2PublicUrl = `https://f005.backblazeb2.com/file/ISTARTX/${finalKey}`;
+        
+        console.log(`File URLs generated:`);
+        console.log(`- CDN URL: ${cdnUrl}`);
+        console.log(`- B2 Direct URL: ${b2Url}`);
+        console.log(`- B2 Public URL: ${b2PublicUrl}`);
 
         results.push({
           success: true,
@@ -380,6 +603,8 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
           originalFileName: file.originalname,
           finalFileName: finalFilename,
           cdnUrl: cdnUrl,
+          b2Url: b2Url,
+          b2PublicUrl: b2PublicUrl,
           b2Key: finalKey,
           fileSize: file.size,
           mimeType: file.mimetype,
@@ -509,6 +734,40 @@ if (!fs.existsSync(path.join(__dirname, 'uploads/chunks'))) {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}/`);
+  
+  // Run initial cleanup on startup
+  console.log('🧹 Running initial cleanup on startup...');
+  setTimeout(cleanupOrphanedChunks, 5000); // Wait 5 seconds for server to be ready
+});
+
+// Graceful shutdown handling
+process.on('SIGTERM', () => {
+  console.log('🛑 SIGTERM received, starting graceful shutdown...');
+  
+  // Clean up all active uploads
+  console.log(`🧹 Cleaning up ${activeUploads.size} active upload sessions...`);
+  for (const [uploadId, uploadInfo] of activeUploads.entries()) {
+    for (const [chunkIndex, chunkInfo] of uploadInfo.chunks.entries()) {
+      try {
+        if (fs.existsSync(chunkInfo.path)) {
+          fs.unlinkSync(chunkInfo.path);
+          console.log(`🗑️ Removed chunk ${chunkIndex} for session ${uploadId}`);
+        }
+      } catch (error) {
+        console.error(`Error cleaning up chunk ${chunkInfo.path}:`, error);
+      }
+    }
+  }
+  
+  server.close(() => {
+    console.log('✅ Server gracefully shut down');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('🛑 SIGINT received, starting graceful shutdown...');
+  process.emit('SIGTERM');
 });

@@ -442,6 +442,16 @@
                                 <a href="${file.cdnUrl}" target="_blank">${file.cdnUrl}</a>
                                 <button class="copy-btn" onclick="copyToClipboard('${file.cdnUrl}')">Copy</button>
                             </div>
+                            ${file.b2Url ? `<div class="file-url">
+                                🔗 <strong>B2 Direct URL:</strong> 
+                                <a href="${file.b2Url}" target="_blank">${file.b2Url}</a>
+                                <button class="copy-btn" onclick="copyToClipboard('${file.b2Url}')">Copy</button>
+                            </div>` : ''}
+                            ${file.b2PublicUrl ? `<div class="file-url">
+                                🔗 <strong>B2 Public URL:</strong> 
+                                <a href="${file.b2PublicUrl}" target="_blank">${file.b2PublicUrl}</a>
+                                <button class="copy-btn" onclick="copyToClipboard('${file.b2PublicUrl}')">Copy</button>
+                            </div>` : ''}
                         </div>
                     `;
                 });
