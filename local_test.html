@@ -157,7 +157,7 @@
             <div style="font-size: 0.9em; color: #666; margin: 10px 0;">
                 ✅ <strong>Supported:</strong> Images, Videos, Documents, Archives<br>
                 📏 <strong>File Size:</strong> Up to 2GB per file<br>
-                📊 <strong>Bulk Upload:</strong> Up to 10 files at once<br>
+                📊 <strong>Queue System:</strong> Unlimited files (processed in batches)<br>
                 🚀 <strong>Chunked Upload:</strong> Files sent in 10MB chunks for better performance
             </div>
             
@@ -260,64 +260,89 @@
             progressDiv.style.display = 'block';
             results.innerHTML = '';
 
-            try {
-                const uploadResults = [];
-                const uploadErrors = [];
+            // Queue-based upload system
+            await processUploadQueue(Array.from(files), userId, serverUrl);
 
-                for (let i = 0; i < files.length; i++) {
-                    const file = files[i];
-                    const fileSizeStr = file.size > 1024 * 1024 * 1024 ? 
-                        `${(file.size / 1024 / 1024 / 1024).toFixed(2)}GB` : 
-                        `${(file.size / 1024 / 1024).toFixed(1)}MB`;
-                    progressText.textContent = `Uploading file ${i + 1}/${files.length}: ${file.name} (${fileSizeStr})`;
-                    
-                    try {
-                        const result = await uploadFileInChunks(file, userId, serverUrl, (progress) => {
-                            const overallProgress = ((i + progress) / files.length) * 100;
+            uploadBtn.disabled = false;
+            progressDiv.style.display = 'none';
+            progressFill.style.width = '0%';
+        }
+
+        async function processUploadQueue(fileQueue, userId, serverUrl) {
+            const uploadResults = [];
+            const uploadErrors = [];
+            const maxConcurrentUploads = 3; // Process 3 files at once
+            let activeUploads = 0;
+            let processedCount = 0;
+            
+            console.log(`Starting queue processing for ${fileQueue.length} files (max ${maxConcurrentUploads} concurrent uploads)`);
+
+            return new Promise((resolve) => {
+                function processNext() {
+                    // Check if we can start more uploads
+                    while (activeUploads < maxConcurrentUploads && fileQueue.length > 0) {
+                        const file = fileQueue.shift();
+                        activeUploads++;
+                        
+                        const fileSizeStr = file.size > 1024 * 1024 * 1024 ? 
+                            `${(file.size / 1024 / 1024 / 1024).toFixed(2)}GB` : 
+                            `${(file.size / 1024 / 1024).toFixed(1)}MB`;
+                        
+                        progressText.textContent = `Processing file ${processedCount + 1}: ${file.name} (${fileSizeStr}) | Queue: ${fileQueue.length} remaining | Active: ${activeUploads}`;
+                        
+                        uploadFileInChunks(file, userId, serverUrl, (progress) => {
+                            // Calculate overall progress
+                            const overallProgress = ((processedCount + progress) / (uploadResults.length + uploadErrors.length + fileQueue.length + activeUploads)) * 100;
                             progressFill.style.width = `${overallProgress}%`;
+                        }).then(result => {
+                            uploadResults.push(result);
+                            console.log(`✅ Queue: Successfully uploaded ${file.name}`);
+                        }).catch(error => {
+                            console.error(`❌ Queue: Error uploading ${file.name}:`, error);
+                            uploadErrors.push({ fileName: file.name, error: error.message });
+                        }).finally(() => {
+                            activeUploads--;
+                            processedCount++;
+                            
+                            // Update results in real-time
+                            displayResults({
+                                success: uploadResults.length > 0,
+                                userId: userId,
+                                summary: {
+                                    total: processedCount + fileQueue.length + activeUploads,
+                                    successful: uploadResults.length,
+                                    failed: uploadErrors.length,
+                                    pending: fileQueue.length + activeUploads
+                                },
+                                files: uploadResults,
+                                errors: uploadErrors
+                            });
+                            
+                            // Check if we're done
+                            if (fileQueue.length === 0 && activeUploads === 0) {
+                                console.log(`🏁 Queue processing complete: ${uploadResults.length} successful, ${uploadErrors.length} failed`);
+                                resolve();
+                            } else {
+                                // Process next file(s)
+                                processNext();
+                            }
                         });
-                        uploadResults.push(result);
-                    } catch (error) {
-                        console.error(`Error uploading ${file.name}:`, error);
-                        uploadErrors.push({ fileName: file.name, error: error.message });
                     }
                 }
-
-                // Display results
-                displayResults({
-                    success: uploadResults.length > 0,
-                    userId: userId,
-                    summary: {
-                        total: files.length,
-                        successful: uploadResults.length,
-                        failed: uploadErrors.length
-                    },
-                    files: uploadResults,
-                    errors: uploadErrors
-                });
-
-            } catch (error) {
-                console.error('Upload error:', error);
-                results.innerHTML = `
-                    <div class="file-result error">
-                        <div class="file-name">Upload Failed</div>
-                        <div class="error-message">${error.message}</div>
-                    </div>
-                `;
-            } finally {
-                uploadBtn.disabled = false;
-                progressDiv.style.display = 'none';
-                progressFill.style.width = '0%';
-            }
+                
+                // Start processing
+                processNext();
+            });
         }
 
         async function uploadFileInChunks(file, userId, serverUrl, progressCallback) {
             const chunkSize = 10 * 1024 * 1024; // 10MB chunks
             const totalChunks = Math.ceil(file.size / chunkSize);
 
-            console.log(`Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) in ${totalChunks} chunks of ${chunkSize / 1024 / 1024}MB each`);
+            console.log(`🚀 Starting chunked upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) in ${totalChunks} chunks of ${chunkSize / 1024 / 1024}MB each`);
 
-            // Step 1: Initialize upload
+            // Step 1: Initialize upload (Network Call #1)
+            console.log(`📡 Network Call #1: Initializing upload for ${file.name}`);
             const initResponse = await fetch(`${serverUrl}/upload/init`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -335,9 +360,9 @@
             const initResult = await initResponse.json();
             const uploadId = initResult.uploadId;
 
-            console.log(`Initialized upload with ID: ${uploadId}`);
+            console.log(`✅ Upload initialized with ID: ${uploadId}`);
 
-            // Step 2: Upload chunks
+            // Step 2: Upload chunks (Separate network call for each chunk)
             for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
                 const start = chunkIndex * chunkSize;
                 const end = Math.min(start + chunkSize, file.size);
@@ -348,7 +373,12 @@
                 formData.append('chunkIndex', chunkIndex.toString());
                 formData.append('chunk', chunk);
 
-                console.log(`Uploading chunk ${chunkIndex + 1}/${totalChunks} (${chunk.size} bytes)`);
+                console.log(`📡 Network Call #${chunkIndex + 2}: Uploading chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(2)}MB) for ${file.name}`);
+
+                // Add delay to make network calls more visible
+                if (chunkIndex > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay between chunks
+                }
 
                 const chunkResponse = await fetch(`${serverUrl}/upload/chunk`, {
                     method: 'POST',
@@ -359,12 +389,16 @@
                     throw new Error(`Failed to upload chunk ${chunkIndex}: ${chunkResponse.status}`);
                 }
 
+                const chunkResult = await chunkResponse.json();
+                console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully (Total chunks received: ${chunkResult.receivedChunks})`);
+
                 // Update progress
                 const progress = (chunkIndex + 1) / totalChunks;
                 progressCallback(progress);
             }
 
-            // Step 3: Complete upload
+            // Step 3: Complete upload (Final network call)
+            console.log(`📡 Network Call #${totalChunks + 2}: Completing upload for ${file.name}`);
             const completeResponse = await fetch(`${serverUrl}/upload/complete`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -376,7 +410,7 @@
             }
 
             const result = await completeResponse.json();
-            console.log(`Successfully uploaded ${file.name} → ${result.finalFileName}`);
+            console.log(`🎉 Successfully uploaded ${file.name} → ${result.finalFileName} (Total network calls: ${totalChunks + 2})`);
             
             return result;
         }
@@ -384,8 +418,13 @@
         function displayResults(data) {
             let html = `
                 <h3>📊 Upload Results</h3>
-                <p><strong>Summary:</strong> ${data.summary.successful} of ${data.summary.total} files uploaded successfully</p>
-            `;
+                <p><strong>Summary:</strong> ${data.summary.successful} successful, ${data.summary.failed} failed`;
+            
+            if (data.summary.pending && data.summary.pending > 0) {
+                html += `, ${data.summary.pending} pending`;
+            }
+            
+            html += ` (${data.summary.total} total)</p>`;
 
             // Display successful uploads
             if (data.files && data.files.length > 0) {

@@ -6,11 +6,17 @@ const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require('@aws-sdk/client-s3');
 
 const app = express();
+
+// Increase payload limits for large uploads
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
 // Configure multer for chunk uploads (10MB chunks)
 const chunkUpload = multer({ 
   dest: path.join(__dirname, 'uploads/chunks/'),
   limits: {
     fileSize: 15 * 1024 * 1024, // 15MB per chunk (buffer for 10MB + headers)
+    fields: 100 // Allow more form fields for metadata
   }
 });
 
@@ -19,7 +25,8 @@ const upload = multer({
   dest: path.join(__dirname, 'uploads/'),
   limits: {
     fileSize: 2 * 1024 * 1024 * 1024, // 2GB
-    files: 10 // Maximum 10 files at once
+    files: 50, // Maximum 50 files at once
+    fields: 100 // Allow more form fields
   }
 });
 
