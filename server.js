@@ -239,6 +239,88 @@ async function uploadLargeFile(fileData, bucketName, key, contentType) {
   }
 }
 
+// Memory-efficient version that streams from file path
+async function uploadLargeFileFromPath(filePath, bucketName, key, contentType) {
+  const stats = fs.statSync(filePath);
+  const fileSize = stats.size;
+  const chunkSize = 25 * 1024 * 1024; // 25MB chunks for S3 multipart
+  
+  if (fileSize <= chunkSize) {
+    // File is small enough for regular upload
+    const fileStream = fs.createReadStream(filePath);
+    const uploadCommand = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      Body: fileStream,
+      ContentType: contentType,
+    });
+    return await s3Client.send(uploadCommand);
+  }
+
+  console.log(`Starting streaming multipart upload for ${key} (${fileSize} bytes)`);
+  
+  // Create multipart upload
+  const createCommand = new CreateMultipartUploadCommand({
+    Bucket: bucketName,
+    Key: key,
+    ContentType: contentType,
+  });
+  
+  const createResult = await s3Client.send(createCommand);
+  const uploadId = createResult.UploadId;
+  
+  try {
+    const parts = [];
+    let partNumber = 1;
+    
+    // Upload parts by reading chunks from file
+    for (let start = 0; start < fileSize; start += chunkSize) {
+      const end = Math.min(start + chunkSize, fileSize);
+      const chunkLength = end - start;
+      
+      // Read chunk from file without loading entire file into memory
+      const chunk = Buffer.alloc(chunkLength);
+      const fd = fs.openSync(filePath, 'r');
+      fs.readSync(fd, chunk, 0, chunkLength, start);
+      fs.closeSync(fd);
+      
+      console.log(`📤 Uploading part ${partNumber} (${chunkLength} bytes) from offset ${start}`);
+      
+      const uploadPartCommand = new UploadPartCommand({
+        Bucket: bucketName,
+        Key: key,
+        PartNumber: partNumber,
+        UploadId: uploadId,
+        Body: chunk,
+      });
+      
+      const partResult = await s3Client.send(uploadPartCommand);
+      parts.push({
+        ETag: partResult.ETag,
+        PartNumber: partNumber,
+      });
+      
+      partNumber++;
+    }
+    
+    // Complete multipart upload
+    const completeCommand = new CompleteMultipartUploadCommand({
+      Bucket: bucketName,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: { Parts: parts },
+    });
+    
+    const result = await s3Client.send(completeCommand);
+    console.log(`Streaming multipart upload completed for ${key}`);
+    return result;
+    
+  } catch (error) {
+    console.error(`Streaming multipart upload failed for ${key}:`, error);
+    throw error;
+  }
+}
+
 // Configure S3 client for Backblaze B2
 const s3Client = new S3Client({
   region: 'us-east-005',
@@ -407,19 +489,43 @@ app.post('/upload/complete', async (req, res) => {
     
     console.log(`Completing upload ${uploadId} with ${uploadInfo.chunks.size} chunks`);
     
-    // Combine chunks into final file
+    // Combine chunks into final file using streaming approach
     const finalKey = `${uploadInfo.userId}/${uploadInfo.fileName}`;
     const chunks = Array.from(uploadInfo.chunks.entries()).sort(([a], [b]) => a - b);
     
-    // Read all chunks and combine
-    const combinedBuffer = Buffer.concat(
-      chunks.map(([index, chunkInfo]) => fs.readFileSync(chunkInfo.path))
-    );
+    // Create a temporary combined file path
+    const tempFilePath = path.join(__dirname, 'uploads', `temp_${uploadId}_${Date.now()}.tmp`);
     
-    console.log(`Combined file size: ${combinedBuffer.length} bytes`);
+    // Combine chunks by streaming them to a temporary file
+    const writeStream = fs.createWriteStream(tempFilePath);
+    let totalSize = 0;
     
-    // Upload to B2 using our existing multipart function
-    await uploadLargeFile(combinedBuffer, BUCKET_NAME, finalKey, 'application/octet-stream');
+    for (const [index, chunkInfo] of chunks) {
+      const chunkData = fs.readFileSync(chunkInfo.path);
+      writeStream.write(chunkData);
+      totalSize += chunkData.length;
+      console.log(`📦 Combined chunk ${index} (${chunkData.length} bytes)`);
+    }
+    writeStream.end();
+    
+    // Wait for write stream to finish
+    await new Promise((resolve, reject) => {
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+    });
+    
+    console.log(`Combined file size: ${totalSize} bytes`);
+    
+    // Upload the temporary file to B2 using file stream to avoid memory issues
+    await uploadLargeFileFromPath(tempFilePath, BUCKET_NAME, finalKey, 'application/octet-stream');
+    
+    // Clean up temporary file
+    try {
+      fs.unlinkSync(tempFilePath);
+      console.log(`🗑️ Cleaned up temporary file: ${tempFilePath}`);
+    } catch (tempCleanupError) {
+      console.error(`Error cleaning up temporary file:`, tempCleanupError);
+    }
     
     // Cleanup chunks (enhanced cleanup)
     let cleanedChunks = 0;
@@ -461,7 +567,7 @@ app.post('/upload/complete', async (req, res) => {
       b2Url: b2Url,
       b2PublicUrl: b2PublicUrl,
       b2Key: finalKey,
-      fileSize: combinedBuffer.length
+      fileSize: totalSize
     });
     
     console.log(`Successfully completed chunked upload: ${uploadInfo.originalFileName} → ${uploadInfo.fileName}`);

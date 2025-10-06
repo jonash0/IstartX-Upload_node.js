@@ -1,3 +1,8 @@
+<?php
+// Set maximum execution time to 600 seconds (10 minutes)
+set_time_limit(600);
+ini_set('max_execution_time', 600);
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -150,11 +155,24 @@
             border-radius: 4px;
             margin: 0 10px;
         }
+        .timeout-info {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            color: #856404;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🚀 IstartX File Upload Test</h1>
+        
+        <div class="timeout-info">
+            ⏱️ <strong>PHP Timeout:</strong> Extended to 600 seconds (10 minutes) for large file uploads
+        </div>
         
         <div class="server-select">
             <label>Upload Server:</label>
@@ -171,7 +189,7 @@
                 ✅ <strong>Supported:</strong> Images, Videos, Documents, Archives<br>
                 📏 <strong>File Size:</strong> Up to 2GB per file<br>
                 📊 <strong>Queue System:</strong> Unlimited files (processed in batches)<br>
-                🚀 <strong>Adaptive Chunking:</strong> Smart chunk sizes (1-5MB) with concurrent uploads for optimal speed
+                🚀 <strong>Chunked Upload:</strong> Files sent in 10MB chunks for better performance
             </div>
             
             <input type="text" id="userIdInput" placeholder="User ID (optional)" value="guest">
