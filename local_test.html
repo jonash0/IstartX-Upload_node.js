@@ -315,7 +315,26 @@
                 }
                 progressText.textContent = `Queue: ${queueCount} remaining | Active: ${activeCount}` + (fileName ? ` | Processing: ${fileName} (${fileSizeStr})` : '');
             }
+
             return new Promise((resolve) => {
+                function processNext() {
+                    // Start new uploads if we have capacity and files in queue
+                    while (activeUploads < maxConcurrentUploads && fileQueue.length > 0) {
+                        const file = fileQueue.shift();
+                        activeUploads++;
+                        processedCount++;
+                        updateProgressText();
+
+                        console.log(`🚀 Starting upload ${processedCount}: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+
+                        // Upload file with progress tracking
+                        uploadFileInChunks(file, userId, serverUrl, (progress) => {
+                            // Update overall progress
+                            const totalFiles = processedCount + fileQueue.length + activeUploads - 1;
+                            const overallProgress = ((processedCount - activeUploads + progress) / totalFiles) * 100;
+                            progressFill.style.width = `${overallProgress}%`;
+                        }).then(result => {
+                            uploadResults.push(result);
                             console.log(`✅ Queue: Successfully uploaded ${file.name}`);
                         }).catch(error => {
                             console.error(`❌ Queue: Error uploading ${file.name}:`, error);
@@ -328,18 +347,17 @@
                             displayResults({
                                 userId: userId,
                                 summary: {
-                                    total: processedCount + fileQueue.length + activeUploads,
+                                    total: processedCount,
                                     successful: uploadResults.length,
                                     failed: uploadErrors.length,
                                     pending: fileQueue.length + activeUploads
                                 },
                                 files: uploadResults,
                                 errors: uploadErrors
-                                updateProgressText();
                             });
                             
                             // Check if we're done
-                                    updateProgressText();
+                            if (fileQueue.length === 0 && activeUploads === 0) {
                                 console.log(`🏁 Queue processing complete: ${uploadResults.length} successful, ${uploadErrors.length} failed`);
                                 resolve();
                             } else {
@@ -363,12 +381,11 @@
                 chunkSize = 5 * 1024 * 1024; // 5MB chunks for large files
                 maxConcurrentChunks = 4; // 4 concurrent chunks
             } else if (file.size > 10 * 1024 * 1024) { // Files > 10MB
-                    updateProgressText();
                 chunkSize = 2 * 1024 * 1024; // 2MB chunks for medium files
                 maxConcurrentChunks = 3; // 3 concurrent chunks
             } else { // Small files < 10MB
-                        updateProgressText();
-                        processNext();
+                chunkSize = 1 * 1024 * 1024; // 1MB chunks for small files
+                maxConcurrentChunks = 2; // 2 concurrent chunks
             }
 
             const totalChunks = Math.ceil(file.size / chunkSize);

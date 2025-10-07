@@ -1,8 +1,9 @@
 # fly.toml app configuration file generated for istartx-upload on 2025-10-06T00:00:00Z
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# Global multi-region upload service deployment
 
 app = "istartx-upload-demo"
-primary_region = "gru"
+primary_region = "fra"
 
 [build]
 
@@ -11,13 +12,17 @@ primary_region = "gru"
   force_https = true
   auto_stop_machines = true
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ["app"]
+
+# Multi-region configuration
+# Machines deployed in: FRA, SJC, DFW, AMS, LAX, CDG, ORD, SIN, ARN
+# Each with 2GB volume for upload storage
 
 [[vm]]
   cpu_kind = "shared"
-  cpus = 1
-  memory_mb = 1024
+  cpus = 2
+  memory_mb = 2048
 
 [env]
   PORT = "3000"
@@ -25,3 +30,4 @@ primary_region = "gru"
 [[mounts]]
   source = "uploads_data"
   destination = "/app/uploads"
+  size_gb = 2
