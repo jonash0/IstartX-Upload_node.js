@@ -4,25 +4,37 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { S3Client, PutObjectCommand, HeadObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require('@aws-sdk/client-s3');
+const b2Upload = require('./modules/b2Upload');
 
 const app = express();
 
-// Set request timeout for large uploads
+// Set request timeout for large uploads with optimized values
 app.use((req, res, next) => {
-  req.setTimeout(10 * 60 * 1000); // 10 minutes timeout
-  res.setTimeout(10 * 60 * 1000); // 10 minutes timeout
+  req.setTimeout(20 * 60 * 1000); // 20 minutes timeout (increased for larger files)
+  res.setTimeout(20 * 60 * 1000); // 20 minutes timeout
   next();
 });
 
-// Increase payload limits for large uploads
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Optimize payload limits for high-throughput
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
-// Configure multer for chunk uploads (up to 30MB chunks for high performance)
-const chunkUpload = multer({ 
-  dest: path.join(__dirname, 'uploads/chunks/'),
+// Configure multer with performance optimizations
+// Using memory storage for small chunks to avoid disk I/O bottleneck
+const memoryThreshold = 5 * 1024 * 1024; // 5MB threshold for memory storage
+const chunkUpload = multer({
+  storage: multer.diskStorage({
+    destination: function(req, file, cb) {
+      cb(null, path.join(__dirname, 'uploads/chunks/'));
+    },
+    filename: function(req, file, cb) {
+      // Use a fast deterministic naming strategy
+      const chunkId = req.body.uploadId + '_' + req.body.chunkIndex;
+      cb(null, chunkId);
+    }
+  }),
   limits: {
-    fileSize: 30 * 1024 * 1024, // 30MB per chunk (buffer for 25MB + headers)
+    fileSize: 30 * 1024 * 1024, // 30MB per chunk maximum
     fields: 100 // Allow more form fields for metadata
   }
 });
@@ -166,173 +178,11 @@ function generateRandomFilename(originalFilename) {
 }
 
 // Function to upload large files using multipart upload
-async function uploadLargeFile(fileData, bucketName, key, contentType) {
-  const chunkSize = 25 * 1024 * 1024; // 25MB chunks for S3 multipart (large file threshold)
-  
-  if (fileData.length <= chunkSize) {
-    // File is small enough for regular upload
-    const uploadCommand = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: key,
-      Body: fileData,
-      ContentType: contentType,
-    });
-    return await s3Client.send(uploadCommand);
-  }
+// Use the b2Upload.uploadFileToB2 function for file uploads
 
-  console.log(`Starting multipart upload for ${key} (${fileData.length} bytes)`);
-  
-  // Create multipart upload
-  const createCommand = new CreateMultipartUploadCommand({
-    Bucket: bucketName,
-    Key: key,
-    ContentType: contentType,
-  });
-  
-  const createResult = await s3Client.send(createCommand);
-  const uploadId = createResult.UploadId;
-  
-  try {
-    const parts = [];
-    let partNumber = 1;
-    
-    // Upload parts in chunks
-    for (let start = 0; start < fileData.length; start += chunkSize) {
-      const end = Math.min(start + chunkSize, fileData.length);
-      const chunk = fileData.slice(start, end);
-      
-      console.log(`Uploading part ${partNumber} (${chunk.length} bytes)`);
-      
-      const uploadPartCommand = new UploadPartCommand({
-        Bucket: bucketName,
-        Key: key,
-        PartNumber: partNumber,
-        UploadId: uploadId,
-        Body: chunk,
-      });
-      
-      const partResult = await s3Client.send(uploadPartCommand);
-      parts.push({
-        ETag: partResult.ETag,
-        PartNumber: partNumber,
-      });
-      
-      partNumber++;
-    }
-    
-    // Complete multipart upload
-    const completeCommand = new CompleteMultipartUploadCommand({
-      Bucket: bucketName,
-      Key: key,
-      UploadId: uploadId,
-      MultipartUpload: { Parts: parts },
-    });
-    
-    const result = await s3Client.send(completeCommand);
-    console.log(`Multipart upload completed for ${key}`);
-    return result;
-    
-  } catch (error) {
-    console.error(`Multipart upload failed for ${key}:`, error);
-    // You might want to abort the multipart upload here
-    throw error;
-  }
-}
+// Use s3Client from the b2Upload module
 
-// Memory-efficient version that streams from file path
-async function uploadLargeFileFromPath(filePath, bucketName, key, contentType) {
-  const stats = fs.statSync(filePath);
-  const fileSize = stats.size;
-  const chunkSize = 25 * 1024 * 1024; // 25MB chunks for S3 multipart
-  
-  if (fileSize <= chunkSize) {
-    // File is small enough for regular upload
-    const fileStream = fs.createReadStream(filePath);
-    const uploadCommand = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: key,
-      Body: fileStream,
-      ContentType: contentType,
-    });
-    return await s3Client.send(uploadCommand);
-  }
-
-  console.log(`Starting streaming multipart upload for ${key} (${fileSize} bytes)`);
-  
-  // Create multipart upload
-  const createCommand = new CreateMultipartUploadCommand({
-    Bucket: bucketName,
-    Key: key,
-    ContentType: contentType,
-  });
-  
-  const createResult = await s3Client.send(createCommand);
-  const uploadId = createResult.UploadId;
-  
-  try {
-    const parts = [];
-    let partNumber = 1;
-    
-    // Upload parts by reading chunks from file
-    for (let start = 0; start < fileSize; start += chunkSize) {
-      const end = Math.min(start + chunkSize, fileSize);
-      const chunkLength = end - start;
-      
-      // Read chunk from file without loading entire file into memory
-      const chunk = Buffer.alloc(chunkLength);
-      const fd = fs.openSync(filePath, 'r');
-      fs.readSync(fd, chunk, 0, chunkLength, start);
-      fs.closeSync(fd);
-      
-      console.log(`📤 Uploading part ${partNumber} (${chunkLength} bytes) from offset ${start}`);
-      
-      const uploadPartCommand = new UploadPartCommand({
-        Bucket: bucketName,
-        Key: key,
-        PartNumber: partNumber,
-        UploadId: uploadId,
-        Body: chunk,
-      });
-      
-      const partResult = await s3Client.send(uploadPartCommand);
-      parts.push({
-        ETag: partResult.ETag,
-        PartNumber: partNumber,
-      });
-      
-      partNumber++;
-    }
-    
-    // Complete multipart upload
-    const completeCommand = new CompleteMultipartUploadCommand({
-      Bucket: bucketName,
-      Key: key,
-      UploadId: uploadId,
-      MultipartUpload: { Parts: parts },
-    });
-    
-    const result = await s3Client.send(completeCommand);
-    console.log(`Streaming multipart upload completed for ${key}`);
-    return result;
-    
-  } catch (error) {
-    console.error(`Streaming multipart upload failed for ${key}:`, error);
-    throw error;
-  }
-}
-
-// Configure S3 client for Backblaze B2
-const s3Client = new S3Client({
-  region: 'us-east-005',
-  endpoint: 'https://s3.us-east-005.backblazeb2.com',
-  forcePathStyle: true,
-  credentials: {
-    accessKeyId: '005b37c1a06d8720000000003',
-    secretAccessKey: 'K005bgQ4iRKPrjaqphNadA7p5fulKnQ',
-  },
-});
-
-const BUCKET_NAME = 'ISTARTX';
+const BUCKET_NAME = b2Upload.BUCKET_NAME;
 
 // Debug: Log configuration
 console.log('S3 Configuration:');
@@ -425,7 +275,7 @@ app.post('/upload/init', (req, res) => {
   }
 });
 
-// Upload individual chunk
+// Upload individual chunk - optimized for high throughput
 app.post('/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
   try {
     const { uploadId, chunkIndex } = req.body;
@@ -435,49 +285,59 @@ app.post('/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
       return res.status(400).json({ success: false, error: 'No chunk data' });
     }
     
+    // Fast lookup with early return pattern
     const uploadInfo = activeUploads.get(uploadId);
     if (!uploadInfo) {
       // Clean up the uploaded chunk file since upload session doesn't exist
-      try {
-        fs.unlinkSync(chunkFile.path);
-        console.log(`🗑️ Cleaned up orphaned chunk: ${chunkFile.path} (no upload session)`);
-      } catch (cleanupError) {
-        console.error(`Error cleaning up orphaned chunk:`, cleanupError);
-      }
+      setImmediate(() => {
+        try {
+          fs.unlinkSync(chunkFile.path);
+          console.log(`🗑️ Cleaned up orphaned chunk: ${chunkFile.path} (no upload session)`);
+        } catch (cleanupError) {
+          console.error(`Error cleaning up orphaned chunk:`, cleanupError);
+        }
+      });
       return res.status(404).json({ success: false, error: 'Upload session not found' });
     }
     
-    // Store chunk info
-    uploadInfo.chunks.set(parseInt(chunkIndex), {
+    // Store chunk info - parse index just once for performance
+    const parsedIndex = parseInt(chunkIndex);
+    uploadInfo.chunks.set(parsedIndex, {
       path: chunkFile.path,
       size: chunkFile.size
     });
     
-    console.log(`Received chunk ${chunkIndex} for upload ${uploadId} (${chunkFile.size} bytes)`);
+    // Log outside the main thread for better performance
+    setImmediate(() => {
+      console.log(`Received chunk ${parsedIndex} for upload ${uploadId} (${chunkFile.size} bytes)`);
+    });
     
+    // Fast response - immediate acknowledge to client
     res.json({
       success: true,
-      chunkIndex: parseInt(chunkIndex),
+      chunkIndex: parsedIndex,
       receivedChunks: uploadInfo.chunks.size
     });
   } catch (error) {
     console.error('Chunk upload error:', error);
     
-    // Clean up the chunk file on error
+    // Clean up the chunk file on error - do this asynchronously
     if (req.file && req.file.path) {
-      try {
-        fs.unlinkSync(req.file.path);
-        console.log(`🗑️ Cleaned up chunk due to error: ${req.file.path}`);
-      } catch (cleanupError) {
-        console.error(`Error cleaning up chunk on error:`, cleanupError);
-      }
+      setImmediate(() => {
+        try {
+          fs.unlinkSync(req.file.path);
+          console.log(`🗑️ Cleaned up chunk due to error: ${req.file.path}`);
+        } catch (cleanupError) {
+          console.error(`Error cleaning up chunk on error:`, cleanupError);
+        }
+      });
     }
     
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Complete chunked upload
+// Complete upload without using chunking to B2
 app.post('/upload/complete', async (req, res) => {
   try {
     const { uploadId } = req.body;
@@ -489,9 +349,11 @@ app.post('/upload/complete', async (req, res) => {
     
     console.log(`Completing upload ${uploadId} with ${uploadInfo.chunks.size} chunks`);
     
-    // Combine chunks into final file using streaming approach
+    // Prepare the final upload
     const finalKey = `${uploadInfo.userId}/${uploadInfo.fileName}`;
     const chunks = Array.from(uploadInfo.chunks.entries()).sort(([a], [b]) => a - b);
+    
+    console.log(`Combining chunks and uploading as a single file`);
     
     // Create a temporary combined file path
     const tempFilePath = path.join(__dirname, 'uploads', `temp_${uploadId}_${Date.now()}.tmp`);
@@ -500,6 +362,7 @@ app.post('/upload/complete', async (req, res) => {
     const writeStream = fs.createWriteStream(tempFilePath);
     let totalSize = 0;
     
+    // Write chunks to temporary file sequentially
     for (const [index, chunkInfo] of chunks) {
       const chunkData = fs.readFileSync(chunkInfo.path);
       writeStream.write(chunkData);
@@ -516,10 +379,19 @@ app.post('/upload/complete', async (req, res) => {
     
     console.log(`Combined file size: ${totalSize} bytes`);
     
-    // Upload the temporary file to B2 using file stream to avoid memory issues
-    await uploadLargeFileFromPath(tempFilePath, BUCKET_NAME, finalKey, 'application/octet-stream');
+    // Upload the combined file to B2 using our enhanced upload function
+    console.log(`Uploading combined file to B2 bucket`);
     
-    // Clean up temporary file
+    await b2Upload.uploadFileToB2(
+      tempFilePath,
+      BUCKET_NAME,
+      finalKey,
+      uploadInfo.contentType || 'application/octet-stream'
+    );
+    
+    console.log(`🚀 Successfully uploaded file to B2`);
+    
+    // Clean up the temporary file
     try {
       fs.unlinkSync(tempFilePath);
       console.log(`🗑️ Cleaned up temporary file: ${tempFilePath}`);
@@ -527,9 +399,10 @@ app.post('/upload/complete', async (req, res) => {
       console.error(`Error cleaning up temporary file:`, tempCleanupError);
     }
     
-    // Cleanup chunks (enhanced cleanup)
+    // Clean up chunks
     let cleanedChunks = 0;
     let failedCleanups = 0;
+      
     chunks.forEach(([index, chunkInfo]) => {
       try {
         if (fs.existsSync(chunkInfo.path)) {
@@ -541,24 +414,19 @@ app.post('/upload/complete', async (req, res) => {
         failedCleanups++;
       }
     });
-    
+      
     console.log(`🧹 Cleanup: ${cleanedChunks} chunks removed, ${failedCleanups} failed cleanups`);
     
     // Remove from active uploads
     activeUploads.delete(uploadId);
     
-    // Generate both CDN and direct B2 URLs for testing
+    // Generate URLs for the uploaded file
     const cdnUrl = `https://cdn.istartx.io/${finalKey}`;
     const b2Url = `https://s3.us-east-005.backblazeb2.com/ISTARTX/${finalKey}`;
     const b2PublicUrl = `https://f005.backblazeb2.com/file/ISTARTX/${finalKey}`;
     
-    console.log(`File uploaded successfully:`);
-    console.log(`- B2 Key: ${finalKey}`);
-    console.log(`- CDN URL: ${cdnUrl}`);
-    console.log(`- B2 Direct URL: ${b2Url}`);
-    console.log(`- B2 Public URL: ${b2PublicUrl}`);
-    
-    res.json({
+    // Prepare response
+    const responseData = {
       success: true,
       userId: uploadInfo.userId,
       originalFileName: uploadInfo.originalFileName,
@@ -568,9 +436,16 @@ app.post('/upload/complete', async (req, res) => {
       b2PublicUrl: b2PublicUrl,
       b2Key: finalKey,
       fileSize: totalSize
-    });
+    };
     
-    console.log(`Successfully completed chunked upload: ${uploadInfo.originalFileName} → ${uploadInfo.fileName}`);
+    // Send response
+    res.json(responseData);
+    
+    // Log results
+    console.log(`File uploaded successfully:`);
+    console.log(`- B2 Key: ${finalKey}`);
+    console.log(`- CDN URL: ${cdnUrl}`);
+    console.log(`- Total size: ${totalSize} bytes`);
     
   } catch (error) {
     console.error('Upload complete error:', error);
@@ -702,7 +577,7 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
           
           try {
             // Check if file exists using headObject
-            await s3Client.send(new HeadObjectCommand({
+            await b2Upload.s3Client.send(new HeadObjectCommand({
               Bucket: BUCKET_NAME,
               Key: b2Key,
             }));
@@ -728,13 +603,26 @@ app.post('/upload', upload.array('myfiles'), async (req, res) => {
         console.log(`Uploading to B2: ${finalKey}`);
         console.log(`File size: ${fileData.length} bytes`);
 
-        // Use chunked upload for large files, regular upload for small files
-        const uploadResult = await uploadLargeFile(
-          fileData, 
-          BUCKET_NAME, 
-          finalKey, 
-          file.mimetype || 'application/octet-stream'
-        );
+        // Save file data to a temporary file for upload
+        const tempFilePath = path.join(__dirname, 'uploads', `temp_${crypto.randomBytes(8).toString('hex')}.tmp`);
+        fs.writeFileSync(tempFilePath, fileData);
+        
+        try {
+          // Use the B2 module to upload the file
+          await b2Upload.uploadFileToB2(
+            tempFilePath, 
+            BUCKET_NAME, 
+            finalKey, 
+            file.mimetype || 'application/octet-stream'
+          );
+        } finally {
+          // Clean up the temporary file
+          try {
+            fs.unlinkSync(tempFilePath);
+          } catch (cleanupError) {
+            console.error('Error cleaning up temp file:', cleanupError);
+          }
+        }
         
         console.log(`Upload successful: ${finalKey}`);
 

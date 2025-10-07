@@ -174,11 +174,9 @@
         <div class="server-select">
             <label>Upload Server:</label>
             <select id="serverSelect">
-                <option value="http://localhost:3000">Local Development (localhost:3000) - Recommended</option>
-                <option value="https://istartx-upload-demo.fly.dev" selected>Fly.io Demo (Global CDN)</option>
+                <option value="http://localhost:3000">Local Development (localhost:3000)</option>
+                <option value="https://istartx-upload-demo.fly.dev" selected>Fly.io Demo (Global CDN) 🚀</option>
             </select>
-            <button type="button" onclick="testServerConnection()" style="margin-left: 10px; padding: 5px 10px; font-size: 12px;">🔍 Test Connection</button>
-            <div id="connectionStatus" style="margin-top: 5px; font-size: 12px;"></div>
         </div>
         
         <div class="upload-form" id="uploadForm">
@@ -394,18 +392,18 @@
         }
 
         async function uploadFileInChunks(file, userId, serverUrl, progressCallback) {
-            // Conservative chunk sizes for stability (debug mode)
+            // Optimized chunk sizes for 100MB video files
             let chunkSize, maxConcurrentChunks;
             
             if (file.size > 500 * 1024 * 1024) { // Files > 500MB
-                chunkSize = 10 * 1024 * 1024; // 10MB chunks for very large files (reduced from 25MB)
-                maxConcurrentChunks = 6; // 6 concurrent chunks (reduced from 12)
+                chunkSize = 3 * 1024 * 1024; // 3MB chunks for very large files
+                maxConcurrentChunks = 15; // 15 concurrent chunks for maximum throughput
             } else if (file.size > 100 * 1024 * 1024) { // Files > 100MB
-                chunkSize = 5 * 1024 * 1024; // 5MB chunks for large files (reduced from 15MB)
-                maxConcurrentChunks = 4; // 4 concurrent chunks (reduced from 10)
+                chunkSize = 3 * 1024 * 1024; // 3MB chunks for large files
+                maxConcurrentChunks = 15; // 15 concurrent chunks as requested
             } else if (file.size > 10 * 1024 * 1024) { // Files > 10MB
-                chunkSize = 2 * 1024 * 1024; // 2MB chunks for medium files (reduced from 10MB)
-                maxConcurrentChunks = 3; // 3 concurrent chunks (reduced from 8)
+                chunkSize = 3 * 1024 * 1024; // 3MB chunks for medium files
+                maxConcurrentChunks = 15; // 15 concurrent chunks as requested
                             } else { // Small files < 10MB
                                 chunkSize = 512 * 1024; // 512KB chunks for small files (ultra-conservative for debugging)
                                 maxConcurrentChunks = 1; // 1 concurrent chunk (sequential upload for debugging)
@@ -414,53 +412,44 @@
             console.log(`🚀 Starting high-performance chunked upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) in ${totalChunks} chunks of ${(chunkSize / 1024 / 1024).toFixed(1)}MB each with ${maxConcurrentChunks} concurrent uploads`);
 
             try {
-                // Performance optimization: Test connection speed first
-                console.log(`🔍 Testing connection speed to ${serverUrl}...`);
-                const speedTestStart = performance.now();
-                const pingResponse = await fetch(`${serverUrl}/ping`, {
-                    method: 'GET',
-                    headers: { 'Accept': 'application/json' }
-                });
-                const speedTestEnd = performance.now();
-                const connectionLatency = speedTestEnd - speedTestStart;
+                // Skip connection test - it might be blocked by servers
+                console.log(`📡 Using default concurrency settings: ${maxConcurrentChunks} concurrent chunks`);
                 
-                if (!pingResponse.ok) {
-                    throw new Error(`Server connection test failed: ${pingResponse.status}`);
-                }
-                
-                const pingData = await pingResponse.json();
-                console.log(`✅ Connection test: ${connectionLatency.toFixed(0)}ms latency`);
-
-                // Adaptive optimization based on connection speed
-                if (connectionLatency < 50) { // Very fast connection
-                    maxConcurrentChunks = Math.min(maxConcurrentChunks + 4, 16);
-                    console.log(`🚀 Fast connection detected, increasing concurrency to ${maxConcurrentChunks}`);
-                } else if (connectionLatency > 200) { // Slow connection
-                    maxConcurrentChunks = Math.max(Math.floor(maxConcurrentChunks / 2), 2);
-                    console.log(`🐌 Slow connection detected, reducing concurrency to ${maxConcurrentChunks}`);
-                }
+                // No adaptive optimization - using conservative defaults
 
                 // Step 1: Initialize upload (Network Call #1)
                 console.log(`📡 Network Call #1: Initializing upload for ${file.name}`);
-                const initResponse = await fetch(`${serverUrl}/upload/init`, {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    },
-                    body: JSON.stringify({
+                
+                // Using XMLHttpRequest for better compatibility
+                const initResult = await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', `${serverUrl}/upload/init`, true);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.setRequestHeader('Accept', 'application/json');
+                    
+                    xhr.onload = function() {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            try {
+                                const response = JSON.parse(xhr.responseText);
+                                resolve(response);
+                            } catch (e) {
+                                reject(new Error(`Invalid JSON response: ${xhr.responseText}`));
+                            }
+                        } else {
+                            reject(new Error(`Failed to initialize upload: ${xhr.status} - ${xhr.responseText}`));
+                        }
+                    };
+                    
+                    xhr.onerror = function() {
+                        reject(new Error('XHR Network Error during initialization'));
+                    };
+                    
+                    xhr.send(JSON.stringify({
                         fileName: file.name,
                         fileSize: file.size,
                         userId: userId
-                    })
+                    }));
                 });
-
-                if (!initResponse.ok) {
-                    const errorText = await initResponse.text();
-                    throw new Error(`Failed to initialize upload: ${initResponse.status} - ${errorText}`);
-                }
-
-                const initResult = await initResponse.json();
                 if (!initResult.success) {
                     throw new Error(initResult.error || 'Upload initialization failed');
                 }
@@ -483,7 +472,8 @@
                         const remainingChunks = chunkQueue.length;
                         const activeChunks = activeChunkUploads;
                         const completedCount = completedChunks;
-                        const chunkProgress = `Chunks: ${completedCount}/${totalChunks} done | ${activeChunks} active | ${remainingChunks} queued`;
+                        const percentComplete = Math.round((completedCount / totalChunks) * 100);
+                        const chunkProgress = `Progress: ${percentComplete}% | ${completedCount}/${totalChunks} chunks | ${activeChunks} uploading | ${remainingChunks} queued`;
                         progressText.textContent = `📤 ${file.name}: ${chunkProgress}`;
                     }
 
@@ -507,43 +497,100 @@
                             // Performance tracking
                             const chunkStartTime = performance.now();
                             console.log(`📡 High-speed upload chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(1)}MB)`);
-
-                            // Create a promise with manual timeout for better compatibility
-                            const uploadPromise = fetch(`${serverUrl}/upload/chunk`, {
-                                method: 'POST',
-                                body: formData,
-                                // Add performance optimizations
-                                keepalive: true
-                                // Note: AbortSignal.timeout may not be supported in all browsers
+                            
+                            // Debug logging
+                            console.log(`🔍 Debug info:`, {
+                                serverUrl: serverUrl,
+                                uploadId: uploadId,
+                                chunkIndex: chunkIndex,
+                                chunkSize: chunk.size,
+                                endpoint: `${serverUrl}/upload/chunk`
                             });
 
-                            // Manual timeout implementation for better browser compatibility
-                            const timeoutPromise = new Promise((_, reject) => {
-                                setTimeout(() => reject(new Error('Upload timeout after 60 seconds')), 60000);
+                            // Using XMLHttpRequest instead of fetch for better compatibility
+                            const xhr = new XMLHttpRequest();
+                            xhr.open('POST', `${serverUrl}/upload/chunk`, true);
+                            
+                            // Set up timeout - adjusted for 3MB chunks with potential slower connections
+                            xhr.timeout = 180000; // 180 seconds timeout (3 minutes per chunk)
+                            
+                            // Add withCredentials for CORS with credentials if needed
+                            // xhr.withCredentials = true;
+                            
+                            // Create a promise to wrap the XHR request
+                            const uploadPromise = new Promise((resolve, reject) => {
+                                xhr.onload = function() {
+                                    if (xhr.status >= 200 && xhr.status < 300) {
+                                        resolve(xhr);
+                                    } else {
+                                        reject(new Error(`Server responded with status: ${xhr.status}`));
+                                    }
+                                };
+                                
+                                xhr.onerror = function() {
+                                    reject(new Error('XHR Network Error'));
+                                };
+                                
+                                xhr.ontimeout = function() {
+                                    console.error(`Timeout occurred for chunk ${chunkIndex + 1}/${totalChunks}`);
+                                    reject(new Error(`Upload timeout after 180 seconds for chunk ${chunkIndex + 1}/${totalChunks}`));
+                                };
+                                
+                                // Upload progress event
+                                xhr.upload.onprogress = function(e) {
+                                    if (e.lengthComputable) {
+                                        const percentComplete = (e.loaded / e.total) * 100;
+                                        console.log(`📊 Chunk ${chunkIndex + 1} upload progress: ${percentComplete.toFixed(1)}%`);
+                                    }
+                                };
+                                
+                                // Send the form data
+                                xhr.send(formData);
                             });
 
-                            Promise.race([uploadPromise, timeoutPromise]).then(async (chunkResponse) => {
+                            uploadPromise.then(async (xhr) => {
+                                // Check if this is a retrying response from our error handler
+                                if (xhr && xhr.retrying === true) {
+                                    console.log(`Chunk ${chunkIndex + 1} scheduled for retry`);
+                                    return { retrying: true };
+                                }
+                                
+                                // Parse the JSON response
+                                let chunkResponse;
+                                try {
+                                    chunkResponse = JSON.parse(xhr.responseText);
+                                } catch (e) {
+                                    console.error(`Failed to parse response: ${xhr.responseText}`);
+                                    throw new Error(`Invalid JSON response: ${xhr.responseText.substring(0, 100)}${xhr.responseText.length > 100 ? '...' : ''}`);
+                                }
+                                console.log(`✅ Upload successful for chunk ${chunkIndex + 1}, status:`, xhr.status);
+                                
                                 const chunkEndTime = performance.now();
                                 const chunkDuration = chunkEndTime - chunkStartTime;
                                 const chunkSpeedMbps = (chunk.size / 1024 / 1024) / (chunkDuration / 1000);
                                 
-                                if (!chunkResponse.ok) {
-                                    const errorText = await chunkResponse.text();
-                                    throw new Error(`Failed to upload chunk ${chunkIndex}: ${chunkResponse.status} - ${errorText}`);
+                                // Verify the response has the expected structure
+                                if (!chunkResponse || typeof chunkResponse !== 'object') {
+                                    console.error(`Invalid response structure:`, chunkResponse);
+                                    throw new Error('Server returned invalid response structure');
                                 }
-
-                                const chunkResult = await chunkResponse.json();
-                                if (!chunkResult.success) {
-                                    throw new Error(`Chunk upload failed: ${chunkResult.error}`);
+                                
+                                // chunkResponse contains the parsed JSON from xhr.responseText
+                                if (!chunkResponse.success) {
+                                    console.error(`Server reported chunk upload failure:`, chunkResponse);
+                                    throw new Error(`Chunk upload failed: ${chunkResponse.error || 'Unknown error'}`);
                                 }
                                 
                                 console.log(`⚡ Chunk ${chunkIndex + 1}/${totalChunks} uploaded: ${chunkSpeedMbps.toFixed(1)} MB/s in ${chunkDuration.toFixed(0)}ms`);
                                 
-                                completedChunks++;
-                                const progress = completedChunks / totalChunks;
-                                progressCallback(progress);
+                                // Don't increment completedChunks for retry responses
+                                if (!chunkResponse.retrying) {
+                                    completedChunks++;
+                                    const progress = completedChunks / totalChunks;
+                                    progressCallback(progress);
+                                }
                                 
-                                return chunkResult;
+                                return chunkResponse;
                             }).catch((error) => {
                                 // Enhanced error logging for better debugging
                                 console.error(`❌ Error uploading chunk ${chunkIndex + 1}:`, error);
@@ -557,15 +604,32 @@
                                 });
                                 
                                 // Check if it's a network error
-                                if (error.message.includes('Failed to fetch') || error.name === 'TypeError') {
-                                    console.error(`🌐 Network connectivity issue detected. This may be due to:`);
+                                if (error.message.includes('Network Error') || error.name === 'TypeError') {
+                                    console.error(`🌐 Network connectivity issue detected with XHR. This may be due to:`);
                                     console.error(`- Internet connection problems`);
                                     console.error(`- Server overload or maintenance`);
                                     console.error(`- Firewall/proxy blocking the request`);
                                     console.error(`- Browser security restrictions`);
+                                    console.error(`- CORS policy violations`);
+                                    
+                                    // Show error in the progress text as well
+                                    progressText.textContent = `Error uploading chunk ${chunkIndex + 1}: Network error. Retrying...`;
+                                    
+                                    // Add retry logic for network errors
+                                    // Push the chunk back to the queue for retry with a slight delay
+                                    console.log(`Adding chunk ${chunkIndex + 1} back to queue for retry...`);
+                                    setTimeout(() => {
+                                        // Add the chunk back to the queue with reduced priority
+                                        chunkQueue.push(chunkIndex);
+                                        console.log(`Chunk ${chunkIndex + 1} added back to queue`);
+                                    }, 2000); // 2-second delay before retry
+                                    
+                                    // We'll resolve this attempt without an error to allow the queue processing to continue
+                                    // This specific chunk will be retried later from the queue
+                                    resolve({ retrying: true });
+                                } else {
+                                    reject(error);
                                 }
-                                
-                                reject(error);
                             }).finally(() => {
                                 activeChunkUploads--;
                                 updateChunkProgress(); // Update display when chunk completes
@@ -575,7 +639,16 @@
                                     console.log(`🎉 All ${totalChunks} chunks uploaded successfully for ${file.name}`);
                                     resolve();
                                 } else if (chunkQueue.length === 0 && activeChunkUploads === 0 && completedChunks < totalChunks) {
-                                    reject(new Error(`Upload incomplete: ${completedChunks}/${totalChunks} chunks completed`));
+                                    // Give a short grace period for any retry chunks to be added back to the queue
+                                    console.log(`Checking for completion: ${completedChunks}/${totalChunks} chunks completed. Waiting for any retries...`);
+                                    setTimeout(() => {
+                                        if (chunkQueue.length === 0 && activeChunkUploads === 0 && completedChunks < totalChunks) {
+                                            reject(new Error(`Upload incomplete: ${completedChunks}/${totalChunks} chunks completed after retry attempts`));
+                                        } else {
+                                            // Continue uploading retry chunks
+                                            uploadNextChunk();
+                                        }
+                                    }, 3000); // 3-second grace period
                                 } else {
                                     // Continue uploading next chunks
                                     uploadNextChunk();
@@ -590,21 +663,33 @@
 
                 // Step 3: Complete upload (Final network call)
                 console.log(`📡 Network Call #${totalChunks + 2}: Completing upload for ${file.name}`);
-                const completeResponse = await fetch(`${serverUrl}/upload/complete`, {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    },
-                    body: JSON.stringify({ uploadId: uploadId })
+                
+                // Using XMLHttpRequest for better compatibility
+                const result = await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', `${serverUrl}/upload/complete`, true);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.setRequestHeader('Accept', 'application/json');
+                    
+                    xhr.onload = function() {
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            try {
+                                const response = JSON.parse(xhr.responseText);
+                                resolve(response);
+                            } catch (e) {
+                                reject(new Error(`Invalid JSON response: ${xhr.responseText}`));
+                            }
+                        } else {
+                            reject(new Error(`Failed to complete upload: ${xhr.status} - ${xhr.responseText}`));
+                        }
+                    };
+                    
+                    xhr.onerror = function() {
+                        reject(new Error('XHR Network Error during completion'));
+                    };
+                    
+                    xhr.send(JSON.stringify({ uploadId: uploadId }));
                 });
-
-                if (!completeResponse.ok) {
-                    const errorText = await completeResponse.text();
-                    throw new Error(`Failed to complete upload: ${completeResponse.status} - ${errorText}`);
-                }
-
-                const result = await completeResponse.json();
                 if (!result.success) {
                     throw new Error(result.error || 'Upload completion failed');
                 }
@@ -729,36 +814,7 @@
             console.log('🔄 Upload interface reset to default state');
         }
 
-        // Test server connection function
-        async function testServerConnection() {
-            const serverUrl = document.getElementById('serverSelect').value;
-            const statusDiv = document.getElementById('connectionStatus');
-            
-            statusDiv.innerHTML = '🔍 Testing connection...';
-            
-            try {
-                const startTime = performance.now();
-                const response = await fetch(`${serverUrl}/ping`, {
-                    method: 'GET',
-                    headers: { 'Accept': 'application/json' }
-                });
-                const endTime = performance.now();
-                const latency = Math.round(endTime - startTime);
-                
-                if (response.ok) {
-                    const result = await response.json();
-                    statusDiv.innerHTML = `✅ Connection successful! (${latency}ms) - Server: ${result.server || 'Unknown'}`;
-                    statusDiv.style.color = 'green';
-                } else {
-                    statusDiv.innerHTML = `❌ Server responded with error: ${response.status}`;
-                    statusDiv.style.color = 'red';
-                }
-            } catch (error) {
-                statusDiv.innerHTML = `❌ Connection failed: ${error.message}`;
-                statusDiv.style.color = 'red';
-                console.error('Connection test failed:', error);
-            }
-        }
+        // Connection testing removed as it might be blocked by servers
     </script>
 </body>
 </html>

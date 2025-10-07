@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XHR Upload Test - IstartX</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .upload-form {
+            border: 2px dashed #ddd;
+            padding: 30px;
+            text-align: center;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .upload-btn {
+            background: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+        .progress {
+            margin: 20px 0;
+            display: none;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #007bff;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        .server-select {
+            margin: 20px 0;
+            text-align: center;
+        }
+        .server-select select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 0 10px;
+        }
+        #results {
+            margin-top: 20px;
+        }
+        .file-result {
+            background: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            border-left: 4px solid #28a745;
+        }
+        .file-result.error {
+            border-left-color: #dc3545;
+            background: #f8d7da;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 IstartX File Upload Test - XHR Version</h1>
+        
+        <div class="server-select">
+            <label>Upload Server:</label>
+            <select id="serverSelect">
+                <option value="http://localhost:3000" selected>Local Development (localhost:3000)</option>
+                <option value="https://istartx-upload-demo.fly.dev">Fly.io Demo (Global CDN) 🚀</option>
+            </select>
+            <button type="button" onclick="testServerConnection()" style="margin-left: 10px;">🔍 Test Connection</button>
+            <div id="connectionStatus" style="margin-top: 5px; font-size: 12px;"></div>
+        </div>
+        
+        <div class="upload-form">
+            <h3>📁 Select a File to Upload</h3>
+            <p>This version uses XMLHttpRequest instead of Fetch API</p>
+            
+            <input type="text" id="userIdInput" placeholder="User ID (optional)" value="guest">
+            <br>
+            <input type="file" id="fileInput">
+            <br>
+            <button class="upload-btn" id="uploadBtn" onclick="uploadFile()">Upload File</button>
+        </div>
+        
+        <div class="progress" id="progressDiv">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <p id="progressText">Uploading...</p>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const userIdInput = document.getElementById('userIdInput');
+        const serverSelect = document.getElementById('serverSelect');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const progressDiv = document.getElementById('progressDiv');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const results = document.getElementById('results');
+        
+        // Test server connection
+        async function testServerConnection() {
+            const serverUrl = serverSelect.value;
+            const statusDiv = document.getElementById('connectionStatus');
+            
+            statusDiv.innerHTML = '🔍 Testing connection...';
+            
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', `${serverUrl}/ping`, true);
+            xhr.setRequestHeader('Accept', 'application/json');
+            
+            const startTime = performance.now();
+            
+            xhr.onload = function() {
+                const endTime = performance.now();
+                const latency = Math.round(endTime - startTime);
+                
+                if (xhr.status === 200) {
+                    const result = JSON.parse(xhr.responseText);
+                    statusDiv.innerHTML = `✅ Connection successful! (${latency}ms) - Server: ${result.server || 'Unknown'}`;
+                    statusDiv.style.color = 'green';
+                } else {
+                    statusDiv.innerHTML = `❌ Server responded with error: ${xhr.status}`;
+                    statusDiv.style.color = 'red';
+                }
+            };
+            
+            xhr.onerror = function() {
+                statusDiv.innerHTML = `❌ Connection failed: Network error`;
+                statusDiv.style.color = 'red';
+            };
+            
+            xhr.send();
+        }
+        
+        function uploadFile() {
+            const file = fileInput.files[0];
+            const userId = userIdInput.value.trim() || 'guest';
+            const serverUrl = serverSelect.value;
+            
+            if (!file) {
+                alert('Please select a file to upload');
+                return;
+            }
+            
+            // Show progress
+            uploadBtn.disabled = true;
+            progressDiv.style.display = 'block';
+            results.innerHTML = '';
+            progressText.textContent = 'Initializing upload...';
+            
+            console.log(`Starting upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+            
+            // Step 1: Initialize upload
+            const initXhr = new XMLHttpRequest();
+            initXhr.open('POST', `${serverUrl}/upload/init`, true);
+            initXhr.setRequestHeader('Content-Type', 'application/json');
+            initXhr.setRequestHeader('Accept', 'application/json');
+            
+            initXhr.onload = function() {
+                if (initXhr.status === 200) {
+                    const response = JSON.parse(initXhr.responseText);
+                    if (response.success) {
+                        console.log(`✅ Upload initialized with ID: ${response.uploadId}`);
+                        uploadChunks(file, response.uploadId, serverUrl);
+                    } else {
+                        handleError(`Failed to initialize upload: ${response.error}`);
+                    }
+                } else {
+                    handleError(`Failed to initialize upload: ${initXhr.status}`);
+                }
+            };
+            
+            initXhr.onerror = function() {
+                handleError('Network error during upload initialization');
+            };
+            
+            initXhr.send(JSON.stringify({
+                fileName: file.name,
+                fileSize: file.size,
+                userId: userId
+            }));
+        }
+        
+        function uploadChunks(file, uploadId, serverUrl) {
+            // Use smaller chunks and single upload for better compatibility
+            const chunkSize = 512 * 1024; // 512KB chunks
+            const totalChunks = Math.ceil(file.size / chunkSize);
+            let uploadedChunks = 0;
+            
+            console.log(`Starting chunked upload: ${file.name} in ${totalChunks} chunks`);
+            
+            // Upload chunks one by one
+            uploadNextChunk(0);
+            
+            function uploadNextChunk(chunkIndex) {
+                if (chunkIndex >= totalChunks) {
+                    // All chunks uploaded, complete the upload
+                    completeUpload(uploadId, serverUrl);
+                    return;
+                }
+                
+                const start = chunkIndex * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
+                
+                // Update progress
+                progressText.textContent = `Uploading chunk ${chunkIndex + 1}/${totalChunks}...`;
+                console.log(`Uploading chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024).toFixed(1)}KB)`);
+                
+                // Use FormData with XMLHttpRequest
+                const formData = new FormData();
+                formData.append('uploadId', uploadId);
+                formData.append('chunkIndex', chunkIndex.toString());
+                formData.append('chunk', chunk);
+                
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', `${serverUrl}/upload/chunk`, true);
+                
+                xhr.upload.onprogress = function(event) {
+                    if (event.lengthComputable) {
+                        // Calculate overall progress
+                        const chunkProgress = event.loaded / event.total;
+                        const overallProgress = ((chunkIndex + chunkProgress) / totalChunks) * 100;
+                        progressFill.style.width = `${overallProgress}%`;
+                    }
+                };
+                
+                xhr.onload = function() {
+                    if (xhr.status === 200) {
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            if (response.success) {
+                                uploadedChunks++;
+                                console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded`);
+                                
+                                // Calculate overall progress
+                                const progress = uploadedChunks / totalChunks * 100;
+                                progressFill.style.width = `${progress}%`;
+                                
+                                // Upload next chunk
+                                uploadNextChunk(chunkIndex + 1);
+                            } else {
+                                handleError(`Failed to upload chunk ${chunkIndex + 1}: ${response.error}`);
+                            }
+                        } catch (error) {
+                            handleError(`Error parsing response: ${error.message}`);
+                        }
+                    } else {
+                        handleError(`Failed to upload chunk ${chunkIndex + 1}: HTTP ${xhr.status}`);
+                    }
+                };
+                
+                xhr.onerror = function() {
+                    console.error(`Error uploading chunk ${chunkIndex + 1}:`, xhr);
+                    console.log('Detailed error info:', {
+                        chunkIndex: chunkIndex,
+                        chunkSize: chunk.size,
+                        uploadId: uploadId,
+                        status: xhr.status,
+                        statusText: xhr.statusText,
+                        responseText: xhr.responseText
+                    });
+                    
+                    handleError(`Network error uploading chunk ${chunkIndex + 1}`);
+                };
+                
+                xhr.send(formData);
+            }
+        }
+        
+        function completeUpload(uploadId, serverUrl) {
+            progressText.textContent = 'Finalizing upload...';
+            console.log('Completing upload...');
+            
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `${serverUrl}/upload/complete`, true);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.setRequestHeader('Accept', 'application/json');
+            
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response.success) {
+                            console.log('✅ Upload completed successfully!');
+                            displaySuccess(response);
+                        } else {
+                            handleError(`Failed to complete upload: ${response.error}`);
+                        }
+                    } catch (error) {
+                        handleError(`Error parsing completion response: ${error.message}`);
+                    }
+                } else {
+                    handleError(`Failed to complete upload: HTTP ${xhr.status}`);
+                }
+            };
+            
+            xhr.onerror = function() {
+                handleError('Network error during upload completion');
+            };
+            
+            xhr.send(JSON.stringify({ uploadId: uploadId }));
+        }
+        
+        function displaySuccess(result) {
+            progressText.textContent = '✅ Upload completed successfully!';
+            
+            results.innerHTML = `
+                <div class="file-result">
+                    <h4>Upload Successful!</h4>
+                    <p><strong>Original File:</strong> ${result.originalFileName}</p>
+                    <p><strong>Final File:</strong> ${result.finalFileName}</p>
+                    ${result.cdnUrl ? `<p><strong>CDN URL:</strong> <a href="${result.cdnUrl}" target="_blank">${result.cdnUrl}</a></p>` : ''}
+                    ${result.b2Url ? `<p><strong>B2 URL:</strong> <a href="${result.b2Url}" target="_blank">${result.b2Url}</a></p>` : ''}
+                </div>
+            `;
+            
+            // Reset UI for next upload
+            uploadBtn.disabled = false;
+        }
+        
+        function handleError(message) {
+            console.error('❌ Error:', message);
+            progressDiv.style.display = 'none';
+            
+            results.innerHTML = `
+                <div class="file-result error">
+                    <h4>Upload Failed</h4>
+                    <p>${message}</p>
+                </div>
+            `;
+            
+            // Reset UI for next upload
+            uploadBtn.disabled = false;
+        }
+    </script>
+</body>
+</html>

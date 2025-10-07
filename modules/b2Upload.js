@@ -2,7 +2,7 @@
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const { S3Client, PutObjectCommand, HeadObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, HeadObjectCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand } = require('@aws-sdk/client-s3');
 
 // Configure S3 client for Backblaze B2
 const s3Client = new S3Client({
@@ -142,9 +142,118 @@ async function uploadFilesToB2(userId, files) {
   return { results, errors };
 }
 
+/**
+ * Upload a file to B2 storage from a local file path
+ * @param {string} filePath - Path to the local file
+ * @param {string} bucketName - B2 bucket name
+ * @param {string} key - B2 object key (path in bucket)
+ * @param {string} contentType - File content type
+ * @returns {Promise<Object>} - Upload result
+ */
+async function uploadFileToB2(filePath, bucketName, key, contentType = 'application/octet-stream') {
+  try {
+    console.log(`📤 Starting B2 upload for ${key}`);
+    const fileSize = fs.statSync(filePath).size;
+    
+    if (fileSize <= 5 * 1024 * 1024) { // For files smaller than 5MB, use single upload
+      const fileData = await fs.promises.readFile(filePath);
+      
+      const uploadCommand = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: fileData,
+        ContentType: contentType,
+      });
+
+      const result = await s3Client.send(uploadCommand);
+      console.log(`✅ B2 upload complete for ${key}`);
+      
+      return {
+        success: true,
+        key,
+        etag: result.ETag
+      };
+    } else {
+      // For larger files, use multipart upload
+      const fileStream = fs.createReadStream(filePath);
+      const partSize = 5 * 1024 * 1024; // 5MB part size
+      
+      // Create multipart upload
+      const multipartParams = {
+        Bucket: bucketName,
+        Key: key,
+        ContentType: contentType
+      };
+      
+      const createResponse = await s3Client.send(new CreateMultipartUploadCommand(multipartParams));
+      const uploadId = createResponse.UploadId;
+      
+      // Read file in chunks and upload parts
+      const fileBuffer = await fs.promises.readFile(filePath);
+      const partCount = Math.ceil(fileSize / partSize);
+      const uploadPromises = [];
+      const uploadedParts = [];
+      
+      console.log(`🧩 Starting multipart upload for ${key} with ${partCount} parts`);
+      
+      for (let i = 0; i < partCount; i++) {
+        const start = i * partSize;
+        const end = Math.min(start + partSize, fileSize);
+        const partBuffer = fileBuffer.slice(start, end);
+        
+        const uploadPartParams = {
+          Bucket: bucketName,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: i + 1,
+          Body: partBuffer
+        };
+        
+        // Upload part and store promise
+        uploadPromises.push(
+          s3Client.send(new UploadPartCommand(uploadPartParams))
+            .then(response => {
+              uploadedParts.push({
+                PartNumber: i + 1,
+                ETag: response.ETag
+              });
+              console.log(`✅ Part ${i+1}/${partCount} uploaded for ${key}`);
+            })
+        );
+      }
+      
+      // Wait for all parts to upload
+      await Promise.all(uploadPromises);
+      
+      // Complete multipart upload
+      const completeParams = {
+        Bucket: bucketName,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: uploadedParts.sort((a, b) => a.PartNumber - b.PartNumber)
+        }
+      };
+      
+      const completeResponse = await s3Client.send(new CompleteMultipartUploadCommand(completeParams));
+      console.log(`✅ Multipart upload complete for ${key}`);
+      
+      return {
+        success: true,
+        key,
+        etag: completeResponse.ETag
+      };
+    }
+  } catch (error) {
+    console.error(`❌ B2 upload error for ${key}:`, error);
+    throw error;
+  }
+}
+
 module.exports = {
   upload: upload.array('files', 20), // Middleware for handling file uploads
   uploadFilesToB2,
+  uploadFileToB2,
   s3Client,
   BUCKET_NAME
 };
