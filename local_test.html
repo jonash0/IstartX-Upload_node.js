@@ -303,17 +303,20 @@
                 const activeCount = activeUploads;
                 let fileName = '';
                 let fileSizeStr = '';
-                if (activeUploads > 0 && fileQueue.length + activeUploads > 0) {
-                    // Show current file name and size if possible
-                    const currentFile = fileQueue[0] || null;
-                    if (currentFile) {
-                        fileName = currentFile.name;
-                        fileSizeStr = currentFile.size > 1024 * 1024 * 1024 ? 
-                            `${(currentFile.size / 1024 / 1024 / 1024).toFixed(2)}GB` : 
-                            `${(currentFile.size / 1024 / 1024).toFixed(1)}MB`;
-                    }
+                if (activeUploads > 0) {
+                    // When files are being processed, show basic queue info
+                    // Detailed chunk progress will be shown by uploadFileInChunks
+                    progressText.textContent = `Files: ${queueCount} queued | ${activeCount} uploading`;
+                } else if (fileQueue.length > 0) {
+                    const currentFile = fileQueue[0];
+                    fileName = currentFile.name;
+                    fileSizeStr = currentFile.size > 1024 * 1024 * 1024 ? 
+                        `${(currentFile.size / 1024 / 1024 / 1024).toFixed(2)}GB` : 
+                        `${(currentFile.size / 1024 / 1024).toFixed(1)}MB`;
+                    progressText.textContent = `Next: ${fileName} (${fileSizeStr}) | ${queueCount} files remaining`;
+                } else {
+                    progressText.textContent = 'Preparing upload...';
                 }
-                progressText.textContent = `Queue: ${queueCount} remaining | Active: ${activeCount}` + (fileName ? ` | Processing: ${fileName} (${fileSizeStr})` : '');
             }
 
             return new Promise((resolve) => {
@@ -446,10 +449,21 @@
                 }
 
                 await new Promise((resolve, reject) => {
+                    function updateChunkProgress() {
+                        const remainingChunks = chunkQueue.length;
+                        const activeChunks = activeChunkUploads;
+                        const completedCount = completedChunks;
+                        const chunkProgress = `Chunks: ${completedCount}/${totalChunks} done | ${activeChunks} active | ${remainingChunks} queued`;
+                        progressText.textContent = `📤 ${file.name}: ${chunkProgress}`;
+                    }
+
                     function uploadNextChunk() {
+                        updateChunkProgress(); // Update display before starting new chunks
+                        
                         while (activeChunkUploads < maxConcurrentChunks && chunkQueue.length > 0) {
                             const chunkIndex = chunkQueue.shift();
                             activeChunkUploads++;
+                            updateChunkProgress(); // Update display when chunk starts
 
                             const start = chunkIndex * chunkSize;
                             const end = Math.min(start + chunkSize, file.size);
@@ -488,6 +502,7 @@
                                 reject(error);
                             }).finally(() => {
                                 activeChunkUploads--;
+                                updateChunkProgress(); // Update display when chunk completes
                                 
                                 // Check if we're done
                                 if (completedChunks === totalChunks) {
@@ -527,6 +542,9 @@
                 if (!result.success) {
                     throw new Error(result.error || 'Upload completion failed');
                 }
+                
+                // Update progress to show completion
+                progressText.textContent = `✅ Completed: ${file.name} → ${result.finalFileName}`;
                 
                 console.log(`🎉 Successfully uploaded ${file.name} → ${result.finalFileName} (Total network calls: ${totalChunks + 2})`);
                 
