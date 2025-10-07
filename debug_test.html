@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Debug Upload Test</title>
+</head>
+<body>
+    <h1>Debug Upload Test</h1>
+    <input type="file" id="testFile" />
+    <button onclick="testUpload()">Test Upload</button>
+    <div id="results"></div>
+
+    <script>
+        const serverUrl = 'https://istartx-upload-demo.fly.dev';
+
+        async function testUpload() {
+            const fileInput = document.getElementById('testFile');
+            const results = document.getElementById('results');
+            
+            if (!fileInput.files.length) {
+                results.innerHTML = '<p>Please select a file first</p>';
+                return;
+            }
+
+            const file = fileInput.files[0];
+            results.innerHTML = `<p>Testing upload of: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)</p>`;
+
+            try {
+                // Test 1: Ping
+                console.log('Testing ping...');
+                const pingResponse = await fetch(`${serverUrl}/ping`);
+                const pingResult = await pingResponse.json();
+                results.innerHTML += `<p>✅ Ping: ${JSON.stringify(pingResult)}</p>`;
+
+                // Test 2: Init upload
+                console.log('Testing upload init...');
+                const initResponse = await fetch(`${serverUrl}/upload/init`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        filename: file.name,
+                        fileSize: file.size,
+                        mimeType: file.type || 'application/octet-stream'
+                    })
+                });
+                const initResult = await initResponse.json();
+                results.innerHTML += `<p>✅ Init: ${JSON.stringify(initResult)}</p>`;
+
+                if (!initResult.success) {
+                    throw new Error('Init failed: ' + initResult.error);
+                }
+
+                // Test 3: Upload a small chunk
+                console.log('Testing chunk upload...');
+                const chunk = file.slice(0, Math.min(1024 * 1024, file.size)); // 1MB or less
+                const formData = new FormData();
+                formData.append('uploadId', initResult.uploadId);
+                formData.append('chunkIndex', '0');
+                formData.append('chunk', chunk);
+
+                console.log('FormData entries:');
+                for (let [key, value] of formData.entries()) {
+                    console.log(key, value instanceof File ? `File: ${value.name} (${value.size} bytes)` : value);
+                }
+
+                const chunkResponse = await fetch(`${serverUrl}/upload/chunk`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                console.log('Chunk response status:', chunkResponse.status);
+                console.log('Chunk response headers:', [...chunkResponse.headers.entries()]);
+
+                const chunkResult = await chunkResponse.json();
+                results.innerHTML += `<p>✅ Chunk: ${JSON.stringify(chunkResult)}</p>`;
+
+                // Test 4: Complete upload
+                console.log('Testing upload complete...');
+                const completeResponse = await fetch(`${serverUrl}/upload/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ uploadId: initResult.uploadId })
+                });
+                const completeResult = await completeResponse.json();
+                results.innerHTML += `<p>✅ Complete: ${JSON.stringify(completeResult)}</p>`;
+
+                results.innerHTML += `<p><strong>🎉 All tests passed!</strong></p>`;
+
+            } catch (error) {
+                console.error('Test failed:', error);
+                results.innerHTML += `<p><strong>❌ Error: ${error.message}</strong></p>`;
+                results.innerHTML += `<p>Error details: ${JSON.stringify({
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack
+                }, null, 2)}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>
