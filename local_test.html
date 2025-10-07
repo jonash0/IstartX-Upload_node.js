@@ -292,7 +292,7 @@
         async function processUploadQueue(fileQueue, userId, serverUrl) {
             const uploadResults = [];
             const uploadErrors = [];
-            const maxConcurrentUploads = 3; // Process 3 files at once
+            const maxConcurrentUploads = 6; // Process 6 files at once for better throughput
             let activeUploads = 0;
             let processedCount = 0;
             
@@ -377,38 +377,53 @@
         }
 
         async function uploadFileInChunks(file, userId, serverUrl, progressCallback) {
-            // Adaptive chunk size and concurrency based on file size
+            // Aggressive performance optimization for chunk size and concurrency
             let chunkSize, maxConcurrentChunks;
             
-            if (file.size > 100 * 1024 * 1024) { // Files > 100MB
-                chunkSize = 5 * 1024 * 1024; // 5MB chunks for large files
-                maxConcurrentChunks = 4; // 4 concurrent chunks
+            if (file.size > 500 * 1024 * 1024) { // Files > 500MB
+                chunkSize = 25 * 1024 * 1024; // 25MB chunks for very large files
+                maxConcurrentChunks = 12; // 12 concurrent chunks
+            } else if (file.size > 100 * 1024 * 1024) { // Files > 100MB
+                chunkSize = 15 * 1024 * 1024; // 15MB chunks for large files
+                maxConcurrentChunks = 10; // 10 concurrent chunks
             } else if (file.size > 10 * 1024 * 1024) { // Files > 10MB
-                chunkSize = 2 * 1024 * 1024; // 2MB chunks for medium files
-                maxConcurrentChunks = 3; // 3 concurrent chunks
+                chunkSize = 10 * 1024 * 1024; // 10MB chunks for medium files
+                maxConcurrentChunks = 8; // 8 concurrent chunks
             } else { // Small files < 10MB
-                chunkSize = 1 * 1024 * 1024; // 1MB chunks for small files
-                maxConcurrentChunks = 2; // 2 concurrent chunks
+                chunkSize = 5 * 1024 * 1024; // 5MB chunks for small files
+                maxConcurrentChunks = 6; // 6 concurrent chunks
             }
 
             const totalChunks = Math.ceil(file.size / chunkSize);
 
-            console.log(`🚀 Starting optimized chunked upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) in ${totalChunks} chunks of ${(chunkSize / 1024 / 1024).toFixed(1)}MB each with ${maxConcurrentChunks} concurrent uploads`);
+            console.log(`🚀 Starting high-performance chunked upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB) in ${totalChunks} chunks of ${(chunkSize / 1024 / 1024).toFixed(1)}MB each with ${maxConcurrentChunks} concurrent uploads`);
 
             try {
-                // Test connection first
-                console.log(`🔍 Testing connection to ${serverUrl}...`);
+                // Performance optimization: Test connection speed first
+                console.log(`🔍 Testing connection speed to ${serverUrl}...`);
+                const speedTestStart = performance.now();
                 const pingResponse = await fetch(`${serverUrl}/ping`, {
                     method: 'GET',
                     headers: { 'Accept': 'application/json' }
                 });
+                const speedTestEnd = performance.now();
+                const connectionLatency = speedTestEnd - speedTestStart;
                 
                 if (!pingResponse.ok) {
                     throw new Error(`Server connection test failed: ${pingResponse.status}`);
                 }
                 
                 const pingData = await pingResponse.json();
-                console.log(`✅ Connection test successful:`, pingData);
+                console.log(`✅ Connection test: ${connectionLatency.toFixed(0)}ms latency`);
+
+                // Adaptive optimization based on connection speed
+                if (connectionLatency < 50) { // Very fast connection
+                    maxConcurrentChunks = Math.min(maxConcurrentChunks + 4, 16);
+                    console.log(`🚀 Fast connection detected, increasing concurrency to ${maxConcurrentChunks}`);
+                } else if (connectionLatency > 200) { // Slow connection
+                    maxConcurrentChunks = Math.max(Math.floor(maxConcurrentChunks / 2), 2);
+                    console.log(`🐌 Slow connection detected, reducing concurrency to ${maxConcurrentChunks}`);
+                }
 
                 // Step 1: Initialize upload (Network Call #1)
                 console.log(`📡 Network Call #1: Initializing upload for ${file.name}`);
@@ -474,12 +489,21 @@
                             formData.append('chunkIndex', chunkIndex.toString());
                             formData.append('chunk', chunk);
 
-                            console.log(`📡 Network Call #${chunkIndex + 2}: Starting upload of chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(2)}MB) for ${file.name}`);
+                            // Performance tracking
+                            const chunkStartTime = performance.now();
+                            console.log(`📡 High-speed upload chunk ${chunkIndex + 1}/${totalChunks} (${(chunk.size / 1024 / 1024).toFixed(1)}MB)`);
 
                             fetch(`${serverUrl}/upload/chunk`, {
                                 method: 'POST',
-                                body: formData
+                                body: formData,
+                                // Add performance optimizations
+                                keepalive: true,
+                                signal: AbortSignal.timeout(30000) // 30 second timeout per chunk
                             }).then(async (chunkResponse) => {
+                                const chunkEndTime = performance.now();
+                                const chunkDuration = chunkEndTime - chunkStartTime;
+                                const chunkSpeedMbps = (chunk.size / 1024 / 1024) / (chunkDuration / 1000);
+                                
                                 if (!chunkResponse.ok) {
                                     const errorText = await chunkResponse.text();
                                     throw new Error(`Failed to upload chunk ${chunkIndex}: ${chunkResponse.status} - ${errorText}`);
@@ -490,7 +514,7 @@
                                     throw new Error(`Chunk upload failed: ${chunkResult.error}`);
                                 }
                                 
-                                console.log(`✅ Chunk ${chunkIndex + 1}/${totalChunks} uploaded successfully (Total chunks received: ${chunkResult.receivedChunks})`);
+                                console.log(`⚡ Chunk ${chunkIndex + 1}/${totalChunks} uploaded: ${chunkSpeedMbps.toFixed(1)} MB/s in ${chunkDuration.toFixed(0)}ms`);
                                 
                                 completedChunks++;
                                 const progress = completedChunks / totalChunks;

@@ -18,11 +18,11 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Configure multer for chunk uploads (10MB chunks)
+// Configure multer for chunk uploads (up to 30MB chunks for high performance)
 const chunkUpload = multer({ 
   dest: path.join(__dirname, 'uploads/chunks/'),
   limits: {
-    fileSize: 15 * 1024 * 1024, // 15MB per chunk (buffer for 10MB + headers)
+    fileSize: 30 * 1024 * 1024, // 30MB per chunk (buffer for 25MB + headers)
     fields: 100 // Allow more form fields for metadata
   }
 });
